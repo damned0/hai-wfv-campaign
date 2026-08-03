@@ -253,6 +253,7 @@ class StateManager:
             query = query.filter(Position.mode == mode)
         return [{
             "symbol": p.symbol, "side": p.side, "entry_price": p.entry_price,
+            "buy_price": p.entry_price, "open_price": p.entry_price,
             "size_coins": p.size_coins, "size_usdt": p.size_usdt,
             "leverage": p.leverage,
             "entry_time": p.entry_time.isoformat() if p.entry_time else None,
@@ -266,8 +267,14 @@ class StateManager:
             query = query.filter(Position.mode == mode)
         query = query.order_by(Position.exit_time.desc()).limit(limit)
         return [{
-            "symbol": p.symbol, "side": p.side, "entry": p.entry_price, "exit": p.exit_price,
+            "symbol": p.symbol, "side": p.side,
+            # cena otwarcia / kupna = entry_price; cena zamknięcia / sprzedaży = exit_price
+            "entry": p.entry_price, "exit": p.exit_price,
+            "buy_price": p.entry_price, "sell_price": p.exit_price,
+            "open_price": p.entry_price, "close_price": p.exit_price,
+            "size_usdt": p.size_usdt, "size_coins": p.size_coins, "leverage": p.leverage,
             "pnl": p.pnl, "pnl_pct": p.pnl_pct, "mode": p.mode,
+            "entry_time": p.entry_time.isoformat() if p.entry_time else None,
             "exit_time": p.exit_time.isoformat() if p.exit_time else None,
         } for p in query.all()]
 

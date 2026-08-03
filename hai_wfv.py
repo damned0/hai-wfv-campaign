@@ -123,6 +123,15 @@ def parse_model(name: str):
     if _rest_lo in ("sniper", "trend", "rev"):
         return core, 6, _rest_lo
 
+    # SPECJALISTA REZIM X KIERUNEK (2026-08-03): 'cat_sniper_r0L' / 'lgb_trend_r1S'.
+    # modele trenowane TYLKO na wierszach danego rezymu ORAZ tylko nalongach (L) lub shortach (S).
+    # Wzorzec: <core>_<sniper|trend|rev>_r<N>{L|S}
+    import re as _re
+    _m = _re.match(r"^(sniper|trend|rev)_r(\d)([lLsS])$", _rest_lo)
+    if _m:
+        _prof, _reg, _s = _m.group(1), _m.group(2), _m.group(3)
+        return core, 6, f"regime{_reg}{_s.upper()}_{_prof}"
+
     horizon = 48  # domyślny (label_long, LOOKAHEAD_BARS=48)
     if rest.startswith("h") and rest[1:].split("_")[0].isdigit():
         horizon = int(rest[1:].split("_")[0])
@@ -315,16 +324,43 @@ def train_window(df_train, models, mt):
             lbl = "label_stacked"
             feats = (mt.MODEL_FEATURES.get(core) or []) + ["horizon_hours"]
         elif profile.startswith("regime"):
-            want = int(profile[6:])
+            # Format 1 (istniejacy): regime<N> -> tylko rezim
+            # Format 2 (2026-08-03, rezim x kierunek): regime<N><L|S>_<sniper|trend|rev>
+            #   -> trening tylko na wierszach rezimu N, i wyłącznie na LONG (L) / SHORT (S).
             if "regime" not in df_train.columns:
                 log.warning(f"    {name}: dataset bez kolumny 'regime' — POMIJAM "
                             f"(regime specialists wymagaja przebudowy datasetu)")
                 continue
-            df_use = df_train[df_train["regime"] == want]
-            if len(df_use) < 5000:
-                log.warning(f"    {name}: za malo probek dla regime={want} ({len(df_use)}) — POMIJAM")
-                continue
-            lbl, feats = label_col(horizon), None
+            import re as _re2
+            _rm = _re2.match(r"^regime(\d)([LS])_(sniper|trend|rev)$", profile)
+            if _rm:
+                want = int(_rm.group(1))
+                _side = _rm.group(2)
+                df_use = df_train[df_train["regime"] == want]
+                if len(df_use) < 1000:
+                    log.warning(f"    {name}: za malo probek dla regime={want} ({len(df_use)}) — POMIJAM")
+                    continue
+                lbl = label_col(horizon)   # e.g. 6h -> label_fast6h
+                feats = SNIPER_FEATURES
+                # kierunek: zostaw tylko LONG (1) lub SHORT (2), neutral (0) wyrzuc
+                _want_cls = 1 if _side == "L" else 2
+                if lbl not in df_use.columns:
+                    log.warning(f"    {name}: brak kolumny {lbl} — POMIJAM")
+                    continue
+                df_use = df_use[df_use[lbl] == _want_cls]
+                if len(df_use) < 300:
+                    log.warning(f"    {name}: za malo probek dla {lbl}=={_want_cls} ({len(df_use)}) — POMIJAM")
+                    continue
+                log.info(f"    {name}: regim={want} kierunek={'LONG' if _side=='L' else 'SHORT'} "
+                         f"({len(df_use)} probek)")
+            else:
+                # jak dotad: czysty regime<N>
+                want = int(profile[6:])
+                df_use = df_train[df_train["regime"] == want]
+                if len(df_use) < 5000:
+                    log.warning(f"    {name}: za malo probek dla regime={want} ({len(df_use)}) — POMIJAM")
+                    continue
+                lbl, feats = label_col(horizon), None
         elif profile == "sdspec":
             df_use = df_train
             lbl = label_col(horizon)          # 24h
@@ -393,9 +429,13 @@ _SCHEMA_WINDOWS = """create table if not exists wfv_windows(
   train_cutoff text, saved_at text)"""
 
 _SCHEMA_TRADES = """create table if not exists wfv_trade_log(
-  id integer primary key autoincrement, run_id text, model_config text, window text,
-  symbol text, side text, entry_price real, exit_price real, pnl_usdt real, pnl_pct real,
-  hold_hours real, reason text, entry_time text, exit_time text, confidence real)"""
+  id integer primary key autoincrement,
+  run_id text, model_config text, window text,
+  symbol text, side text,
+  entry real, exit_price real, pnl_net real, pnl_usdt real, pnl_pct real,
+  result text, open_ts int, close_ts int, atr real, size_usdt real, hours_held real,
+  had_pyramid int, pyramid_pnl real, bb_pos real, regime text, session text,
+  confidence real, dominant_model text, model_votes text, feature_snapshot text)"""
 
 _SCHEMA = """create table if not exists wfv_runs(
   id integer primary key autoincrement, source_file text, instance text, saved_at text,
@@ -433,6 +473,15 @@ def _conn(retries: int = 6):
                 c.execute("alter table wfv_runs add column conf text")
             except sqlite3.OperationalError:
                 pass
+            # Migracja 2026-08-03: wfv_trade_log — dopisz run_id/model_config (starsze bazy
+            # mialy wfvasnie schema bez tych kolumn, przez co save_trades failowal na
+            # 'no such column: model_config' i tradesy NIE trafialy do bazy (brak danych do
+            # dobierania cech). Dopisanie idempotentne dla nowych i istniejacych baz.
+            for _tcol in ("run_id", "model_config"):
+                try:
+                    c.execute(f"alter table wfv_trade_log add column {_tcol} text")
+                except sqlite3.OperationalError:
+                    pass
             return c
         except sqlite3.OperationalError as e:
             last = e
@@ -467,29 +516,39 @@ def save_trades(run_id, cfg, window, trades):
         return
     c = _conn()
     cols = [r[1] for r in c.execute("pragma table_info(wfv_trade_log)")]
-    # Mapowanie kluczy trade'a z backtestera -> kolumny schema (2026-08-03).
-    # backtester zwraca: entry/exit/hours_held/result/open_ts/close_ts
-    # schema oczekuje:   entry_price/exit_price/hold_hours/reason/entry_time/exit_time
-    _MAP = {
-        "entry_price": "entry", "exit_price": "exit", "hold_hours": "hours_held",
-        "reason": "result", "entry_time": "open_ts", "exit_time": "close_ts",
-    }
+    # Mapowanie kluczy trade'a z backtestera -> kolumny realnej bazy (2026-08-03).
+    # backtester zwraca: entry/exit/hours_held/result/open_ts/close_ts + dominant_model/model_votes
+    _KEYS = ["run_id", "model_config", "window", "symbol", "side",
+             "entry", "exit_price", "pnl_net", "pnl_usdt", "pnl_pct", "result",
+             "open_ts", "close_ts", "atr", "size_usdt", "hours_held",
+             "had_pyramid", "pyramid_pnl", "bb_pos", "regime", "session",
+             "confidence", "dominant_model", "model_votes", "feature_snapshot"]
     rows = []
-    keys = [k for k in cols if k in ("entry_price", "exit_price", "pnl_usdt", "pnl_pct",
-            "hold_hours", "reason", "entry_time", "exit_time", "confidence",
-            "symbol", "side", "run_id", "model_config", "window")]
     for t in trades:
-        base = {"run_id": run_id, "model_config": cfg, "window": window,
-                "symbol": t.get("symbol"), "side": t.get("side"),
-                "pnl_usdt": t.get("pnl_usdt"), "pnl_pct": t.get("pnl_pct"),
-                "confidence": t.get("confidence")}
-        for col, src in _MAP.items():
-            base[col] = t.get(src)
-        rows.append([base.get(k) for k in keys])
+        rec = {
+            "run_id": run_id, "model_config": cfg, "window": window,
+            "symbol": t.get("symbol"), "side": t.get("side"),
+            "entry": t.get("entry"), "exit_price": t.get("exit"),
+            "pnl_net": t.get("pnl_net"), "pnl_usdt": t.get("pnl_usdt"), "pnl_pct": t.get("pnl_pct"),
+            "result": t.get("result"), "open_ts": t.get("open_ts"), "close_ts": t.get("close_ts"),
+            "atr": t.get("atr"), "size_usdt": t.get("size_usdt"), "hours_held": t.get("hours_held"),
+            "had_pyramid": t.get("had_pyramid"), "pyramid_pnl": t.get("pyramid_pnl"),
+            "bb_pos": t.get("bb_pos"), "regime": t.get("regime"), "session": t.get("session"),
+            "confidence": t.get("confidence"),
+            "dominant_model": t.get("dominant_model"),
+            "model_votes": json.dumps(t.get("model_votes")) if isinstance(t.get("model_votes"), (dict, list)) else t.get("model_votes"),
+            "feature_snapshot": json.dumps(t.get("feature_snapshot")) if isinstance(t.get("feature_snapshot"), (dict, list)) else t.get("feature_snapshot"),
+        }
+        rows.append([rec.get(k) for k in _KEYS if k in cols])
+    keys = [k for k in _KEYS if k in cols]
     try:
         c.executemany(f"insert into wfv_trade_log ({','.join(keys)}) "
                       f"values ({','.join('?'*len(keys))})", rows)
-    except sqlite3.OperationalError as e:
+    except Exception as e:
+        # 2026-08-03: byl tu tylko sqlite3.OperationalError, ale realny blad
+        # (dict jako parametr, niezserializowany model_votes/feature_snapshot)
+        # to sqlite3.ProgrammingError - nie byl lapany, wywalal cala kampanie
+        # (save_run() dla werdyktu nigdy nie byl osiagany po tym punkcie).
         log.warning(f"wfv_trade_log: zapis nieudany ({e})")
     finally:
         c.close()

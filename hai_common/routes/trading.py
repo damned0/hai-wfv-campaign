@@ -3,7 +3,7 @@
 # Created by Hauzer | Coded & produced by Claude Sonnet 5
 # ===========================================
 # Funkcje: engine start/stop/status, risk/stats, ceny/OHLCV/symbole,
-# backtest (quick/full/wfv) + status, watchdog, pozycje/saldo/zamkniecie
+# backtest (quick/full/wfv) + status, pozycje/saldo/zamkniecie
 # (recznie/close-all/close-stale), diagnostics, ai/cache/refresh.
 # ===========================================
 from fastapi import APIRouter, HTTPException
@@ -375,82 +375,6 @@ async def backtest_result_download(filename: str):
     return FileResponse(str(fpath), media_type="application/json", filename=filename)
 
 
-# == Watchdog / cache ==
-
-async def _read_master_status_json(timeout: float = 3.0):
-    """Reads master_status.json from SSHFS with timeout — never blocks event loop."""
-    from pathlib import Path
-    import json
-    _path = Path("/mnt/asustor/warehouse_v2/meta/master_status.json")
-    def _read():
-        if not _path.exists():
-            return None
-        with open(_path) as f:
-            return json.load(f)
-    return await asyncio.wait_for(asyncio.to_thread(_read), timeout=timeout)
-
-
-@router.get("/watchdog/status")
-async def watchdog_status():
-    """v5.0 LIV: Czyta status z Asustor watchdog (master_status.json)."""
-    from datetime import datetime, timezone
-
-    try:
-        data = await _read_master_status_json()
-    except asyncio.TimeoutError:
-        return {
-            "enabled": False,
-            "status": "SSHFS_TIMEOUT",
-            "reason": "SSHFS mount nie odpowiada (timeout 3s)",
-            "last_check": None,
-            "restart_by": "N/A",
-        }
-
-    if data is None:
-        return {
-            "enabled": False,
-            "status": "DISABLED",
-            "reason": "Asustor master_status.json not found",
-            "last_check": None,
-            "restart_by": "N/A",
-        }
-
-    try:
-        updated_at = data.get("updated_at", "")
-        version = data.get("watchdog_version", "?")
-        summary = data.get("summary", {})
-
-        is_fresh = False
-        if updated_at:
-            try:
-                ts = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-                age_min = (datetime.now(timezone.utc) - ts).total_seconds() / 60
-                is_fresh = age_min < 15
-            except Exception:
-                pass
-
-        instances_up = summary.get("instances_up", 0)
-        instances_down = summary.get("instances_down", 0)
-        total = instances_up + instances_down
-
-        return {
-            "enabled": is_fresh,
-            "status": "ACTIVE" if is_fresh else "STALE",
-            "reason": f"Asustor watchdog v{version} - monitoring {total} instances",
-            "last_check": updated_at,
-            "restart_by": "Asustor (87.205.4.25)",
-            "instances_up": instances_up,
-            "instances_down": instances_down,
-            "version": version,
-        }
-    except Exception as e:
-        return {
-            "enabled": False,
-            "status": "ERROR",
-            "reason": str(e)[:200],
-            "last_check": None,
-        }
-
 @router.get("/ohlcv/stats")
 async def ohlcv_stats():
     from ..ohlcv_cache import ohlcv_cache
@@ -538,6 +462,8 @@ async def api_positions():
             pos["pnl_pct"]       = round(pnl_pct, 2)
             pos["pnl"]           = round(pnl, 2)
             pos["current_price"] = round(cur, 6)
+            pos["sell_price"]    = round(cur, 6) if pos["side"] == "SHORT" else round(cur, 6)
+            pos["close_price"]   = round(cur, 6)
     return positions
 
 @router.get("/api/closed")
@@ -844,128 +770,3 @@ async def refresh_deriv_cache():
     return {"status": "ok", "message": "Deriv cache rebuild started (from Binance warehouse)"}
 
 
-@router.get("/system/collectors")
-async def system_collectors():
-    """Czyta master_status.json z Asustora."""
-    try:
-        data = await _read_master_status_json()
-    except asyncio.TimeoutError:
-        return {"error": "SSHFS mount nie odpowiada (timeout 3s)"}
-    if data is None:
-        return {"error": "master_status.json not found"}
-    try:
-        collectors = data.get("collectors", {})
-        return {name: {"status": info.get("status", "unknown"), "age_h": info.get("age_h"), "last_run": info.get("last_run")} for name, info in collectors.items()}
-    except Exception as e:
-        return {"error": str(e)[:200]}
-
-
-@router.post("/watchdog/send_report")
-async def watchdog_send_report():
-    """Wysylka pelnego raportu Watchdoga na Telegram."""
-    import os
-    import requests
-    from datetime import datetime, timezone
-
-    TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-    TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-    try:
-        data = await _read_master_status_json()
-    except asyncio.TimeoutError:
-        return {"status": "error", "message": "SSHFS mount nie odpowiada (timeout 3s)"}
-    if data is None:
-        return {"status": "error", "message": "master_status.json not found"}
-
-    try:
-
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        lines = [f"\U0001F988 *HAI Watchdog Report*", f"_{now}_", ""]
-
-        instances = data.get("instances", {})
-        summary = data.get("summary", {})
-        up = summary.get("instances_up", 0)
-        total = up + summary.get("instances_down", 0)
-        lines.append(f"*INSTANCES ({up}/{total} UP)*")
-        for short, info in instances.items():
-            name = info.get("name", short)
-            port = info.get("port", "?")
-            status = info.get("status", "?")
-            if status == "UP":
-                paper = info.get("paper", 0)
-                opn = info.get("open_positions", 0)
-                pnl = info.get("pnl", 0)
-                unreal = info.get("unrealized", 0)
-                lines.append(f"  \u2705 `{name}` :{port}")
-                lines.append(f"      ${paper:.2f} | open={opn} | PnL={pnl:+.2f} | unreal={unreal:+.2f}")
-            else:
-                lines.append(f"  \u274C `{name}` DOWN")
-        lines.append("")
-
-        collectors = data.get("collectors", {})
-        fresh = summary.get("collectors_fresh", 0)
-        stale = summary.get("collectors_stale", 0)
-        missing = summary.get("collectors_missing", 0)
-        total_col = fresh + stale + missing
-        lines.append(f"*COLLECTORS ({fresh}/{total_col} FRESH)*")
-        for name, info in collectors.items():
-            status = info.get("status", "?")
-            age = info.get("age_h")
-            age_str = f"{age:.1f}h" if isinstance(age, (int, float)) else "?"
-            icon = "\u2705" if status == "fresh" else "\u26A0\uFE0F"
-            lines.append(f"  {icon} `{name}` {age_str}")
-        lines.append("")
-
-        version = data.get("watchdog_version", "?")
-        lines.append(f"_Watchdog v{version} | Asustor 87.205.4.25_")
-
-        msg = "\n".join(lines)
-
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT, "text": msg, "parse_mode": "Markdown"},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            return {"status": "ok", "message": "Report wyslany na Telegram", "chars": len(msg)}
-        else:
-            return {"status": "error", "message": f"Telegram {resp.status_code}: {resp.text[:200]}"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)[:300]}
-
-
-@router.get("/system/master")
-async def system_master():
-    """Pelny master_status.json z Asustora (instances + collectors + summary).
-    Zrodlo 3 raportow Watchdog w dashboardzie. Watchdog v1.0 pisze co 5 min."""
-    from datetime import datetime, timezone
-
-    try:
-        data = await _read_master_status_json()
-    except asyncio.TimeoutError:
-        return {"error": "SSHFS mount nie odpowiada (timeout 3s)", "exists": None}
-    if data is None:
-        return {"error": "master_status.json not found", "exists": False}
-    try:
-        updated_at = data.get("updated_at", "")
-        age_min = None
-        is_fresh = False
-        if updated_at:
-            try:
-                ts = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-                age_min = (datetime.now(timezone.utc) - ts).total_seconds() / 60
-                is_fresh = age_min < 15
-            except Exception:
-                pass
-        return {
-            "exists": True,
-            "fresh": is_fresh,
-            "age_min": round(age_min, 1) if age_min is not None else None,
-            "updated_at": updated_at,
-            "watchdog_version": data.get("watchdog_version", "?"),
-            "instances": data.get("instances", {}),
-            "collectors": data.get("collectors", {}),
-            "summary": data.get("summary", {}),
-        }
-    except Exception as e:
-        return {"error": str(e)[:200], "exists": True}
