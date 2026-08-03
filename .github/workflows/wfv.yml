@@ -1,0 +1,86 @@
+name: HAI WFV campaign
+
+on:
+  workflow_dispatch:
+    inputs:
+      configs:
+        description: "comma-separated FAM-* configs (empty = full matrix)"
+        required: false
+        default: ""
+      confs:
+        description: "comma-separated confidence levels"
+        required: false
+        default: "0.80,0.85,0.90,0.95"
+      plans:
+        description: "comma-separated windowsxdays, e.g. 1x365,6x90"
+        required: false
+        default: "1x365,6x90"
+      smoke:
+        description: "smoke test only (single fastest combo)"
+        type: boolean
+        default: false
+
+jobs:
+  build-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - id: gen
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os
+          smoke = "${{ inputs.smoke }}" == "true"
+          if smoke:
+              combos = [{"cfg": "FAM-cat_sniper", "conf": "0.80", "w": "1", "wd": "365"}]
+          else:
+              cfgs_in = "${{ inputs.configs }}".strip()
+              cfgs = [c.strip() for c in cfgs_in.split(",") if c.strip()] or [
+                  "FAM-cat_sniper","FAM-cat_trend","FAM-cat_rev",
+                  "FAM-lgb_sniper","FAM-lgb_trend","FAM-lgb_rev",
+                  "FAM-xgb_sniper","FAM-xgb_trend","FAM-xgb_rev",
+              ]
+              confs = [c.strip() for c in "${{ inputs.confs }}".split(",") if c.strip()]
+              plans = [p.strip() for p in "${{ inputs.plans }}".split(",") if p.strip()]
+              combos = []
+              for cfg in cfgs:
+                  for conf in confs:
+                      for plan in plans:
+                          w, wd = plan.lower().split("x")
+                          combos.append({"cfg": cfg, "conf": conf, "w": w, "wd": wd})
+          print("matrix=" + json.dumps({"include": combos}))
+          EOF
+
+  run:
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.build-matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt
+      - name: run WFV combo
+        env:
+          HAI_ROOT: ${{ github.workspace }}
+          HAI_INSTANCE_DIR: ${{ github.workspace }}
+        run: |
+          python hai_wfv.py --configs "${{ matrix.cfg }}" \
+            --windows "${{ matrix.w }}" --window-days "${{ matrix.wd }}" \
+            --embargo 7 --conf "${{ matrix.conf }}"
+      - name: upload db
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.cfg }}-c${{ matrix.conf }}-${{ matrix.w }}x${{ matrix.wd }}
+          path: |
+            HAI-NL/data/hairesearch.db
+            *.log
+          if-no-files-found: warn
