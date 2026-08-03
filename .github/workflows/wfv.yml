@@ -74,15 +74,7 @@ jobs:
           sudo chmod 755 /root
           sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
           echo "shell find count: $(find /root/ProjektHAI/data_warehouse/ohlcv/binance/1h -name '*.parquet' | wc -l)"
-          python3 -c "
-from pathlib import Path
-p = Path('/root/ProjektHAI/data_warehouse/ohlcv/binance')
-print('exists:', p.exists(), '| is_dir:', p.is_dir())
-files = list((p/'1h').glob('*.parquet'))
-print('python glob count:', len(files))
-print('sample:', files[:3])
-print('BTC test:', (p/'1h'/'BTC.parquet').exists())
-"
+          python3 -c "from pathlib import Path; p = Path('/root/ProjektHAI/data_warehouse/ohlcv/binance'); files = list((p/'1h').glob('*.parquet')); print('exists:', p.exists(), '| python glob count:', len(files), '| BTC:', (p/'1h'/'BTC.parquet').exists())"
       - name: run WFV combo
         env:
           HAI_ROOT: ${{ github.workspace }}
