@@ -112,7 +112,7 @@ _INCLUDE_TRADE_LOG = False
 
 logger = logging.getLogger(__name__)
 
-WH_BASE        = Path("/root/ProjektHAI/data_warehouse/ohlcv/binance")
+WH_BASE        = Path(os.environ.get("HAI_WH", "/root/ProjektHAI/data_warehouse")) / "ohlcv" / "binance"
 BACKTEST_DIR   = Path(__file__).resolve().parent.parent / "data" / "backtest"
 NEURAL_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache" / "neural"
 
@@ -362,7 +362,7 @@ def _load_macro_extended_bt() -> Dict:
     if _MACRO_EXT_BT_CACHE is not None:
         return _MACRO_EXT_BT_CACHE
     out = {}
-    macro_dir = Path("/root/ProjektHAI/data_warehouse/macro")
+    macro_dir = Path(os.environ.get("HAI_WH", "/root/ProjektHAI/data_warehouse")) / "macro"
     for name in _MACRO_EXT_TICKERS:
         try:
             df = pd.read_parquet(macro_dir / f"{name}.parquet")
@@ -787,7 +787,7 @@ class Backtester:
             return (s.astype("datetime64[ms]").astype("int64")).astype("int64")
         # Load deriv features from warehouse (taker_buy_ratio + funding_rate + OI)
         _sym_stem = self._sym_to_filename(symbol)
-        _wh_deriv = Path("/root/ProjektHAI/data_warehouse/derivatives")
+        _wh_deriv = Path(os.environ.get("HAI_WH", "/root/ProjektHAI/data_warehouse")) / "derivatives"
         try:
             _tr_path = _wh_deriv / "taker_ratio" / f"{_sym_stem}.parquet"
             if _tr_path.exists():
@@ -1227,6 +1227,11 @@ class Backtester:
                 daily_reset_day = cur_day
 
             # ── ZAMKNIĘCIE ────────────────────────────────────────────
+            # 2026-08-04: partial-TP + trailing (RAPORT_EDGE.md §12, koncept Hauzera).
+            # Do tej pory backtester mial TYLKO stary binarny hit_tp/hit_sl - honest
+            # WFV (GitHub/Kaggle/VPS) testowal modele pod STARYM systemem wyjscia,
+            # mimo ze engine.py (live/paper) ma juz partial-TP+trailing od 12:04-12:05
+            # tego samego dnia. Ten blok domyka ta rozbieznosc.
             if open_pos is not None:
                 entry = open_pos["entry"]
                 side  = open_pos["side"]
@@ -1234,14 +1239,10 @@ class Backtester:
                 tp_p  = entry + atr_e * atr_tp if side == "LONG" else entry - atr_e * atr_tp
                 sl_p  = entry - atr_e * atr_sl if side == "LONG" else entry + atr_e * atr_sl
 
-                hit_tp = (hi >= tp_p) if side == "LONG" else (lo <= tp_p)
-                hit_sl = (lo <= sl_p) if side == "LONG" else (hi >= sl_p)
-                if hit_tp and hit_sl:
-                    hit_tp = False
-
-                if hit_tp or hit_sl:
-                    exit_p    = tp_p if hit_tp else sl_p
-                    slip_exit = self.slippage_sl if hit_sl else 0.0
+                def _finalize_close(exit_p, result_label, is_sl):
+                    nonlocal open_pos, pyramid_pos, consecutive_losses, pyramid_blocked, \
+                             symbol_cooldown_until, daily_pnl
+                    slip_exit = self.slippage_sl if is_sl else 0.0
                     if side == "LONG":
                         exit_eff = exit_p * (1 - slip_exit)
                         pnl_pct  = (exit_eff - open_pos["entry_eff"]) / open_pos["entry_eff"] * 100
@@ -1253,7 +1254,14 @@ class Backtester:
                     fee_total  = self.fee_taker * 2 * 100
                     funding    = self.funding_daily_rate / 24 * hours_held * 100
                     pnl_net    = pnl_pct - fee_total - funding
+                    # size_usdt tu jest RESZTKĄ (po ew. partial close) - pnl_usdt liczony
+                    # tylko na tym co jeszcze zostalo w pozycji.
                     pnl_usdt   = open_pos["size_usdt"] * pnl_net / 100 * self.base_leverage
+                    # Dolicz zbankowany partial-close (jesli byl) do finalnego USDT-pnl.
+                    # pnl_pct/pnl_net ZOSTAJĄ czyste (ruch ceny resztki) - ta sama zasada
+                    # co w state.py::close_position (2026-08-04): pnl_pct to niezalezna
+                    # od sizingu miara ruchu ceny, nie miksujemy jej z blended USDT.
+                    pnl_usdt  += open_pos.get("realized_partial_pnl", 0.0)
 
                     pyramid_pnl = 0.0
                     had_pyramid = pyramid_pos is not None
@@ -1270,7 +1278,7 @@ class Backtester:
                     self.capital += total_pnl
                     daily_pnl   += total_pnl
 
-                    if hit_tp:
+                    if not is_sl:
                         consecutive_losses = 0
                         pyramid_blocked    = False
                     else:
@@ -1288,11 +1296,14 @@ class Backtester:
                         "pnl_pct":     round(pnl_pct, 3),
                         "pnl_net":     round(pnl_net, 3),
                         "pnl_usdt":    total_pnl,
-                        "result":      "TP" if hit_tp else "SL",
+                        "result":      result_label,
                         "open_ts":     open_pos["open_ts"],
                         "close_ts":    ts_ms,
                         "atr":         round(atr_e, 6),
-                        "size_usdt":   open_pos["size_usdt"],
+                        # size_usdt = ORYGINALNY rozmiar pozycji (przed ew. partial-close),
+                        # zeby "size_usdt" mialo ten sam sens (rozmiar wejscia) dla
+                        # wszystkich trade'ow, niezaleznie czy byl partial czy nie.
+                        "size_usdt":   open_pos.get("original_size_usdt") or open_pos["size_usdt"],
                         "hours_held":  round(hours_held, 1),
                         "had_pyramid": had_pyramid,
                         "pyramid_pnl": round(pyramid_pnl, 2),
@@ -1306,7 +1317,80 @@ class Backtester:
                     })
                     open_pos    = None
                     pyramid_pos = None
-                    continue
+
+                if not open_pos.get("partial_closed"):
+                    # FAZA 1: pelna pozycja. 50% do TP -> partial close 75% wielkosci.
+                    # SL nadal chroni CALA pozycje (jak w oryginale).
+                    tp50_p = entry + (tp_p - entry) * 0.5 if side == "LONG" else entry - (entry - tp_p) * 0.5
+                    hit_tp50 = (hi >= tp50_p) if side == "LONG" else (lo <= tp50_p)
+                    hit_sl   = (lo <= sl_p) if side == "LONG" else (hi >= sl_p)
+                    if hit_tp50 and hit_sl:
+                        hit_tp50 = False  # niejednoznaczny bar -> konserwatywnie SL (jak oryginal)
+
+                    if hit_sl:
+                        _finalize_close(sl_p, "SL", is_sl=True)
+                        continue
+                    elif hit_tp50:
+                        close_frac = 0.75
+                        if side == "LONG":
+                            p_pct = (tp50_p - open_pos["entry_eff"]) / open_pos["entry_eff"] * 100
+                        else:
+                            p_pct = (open_pos["entry_eff"] - tp50_p) / open_pos["entry_eff"] * 100
+                        p_hours = (ts_ms - open_pos["open_ts"]) / 3_600_000
+                        p_net   = p_pct - self.fee_taker * 2 * 100 - self.funding_daily_rate / 24 * p_hours * 100
+                        close_usdt = open_pos["size_usdt"] * close_frac
+                        p_pnl = close_usdt * p_net / 100 * self.base_leverage
+
+                        open_pos["original_size_usdt"]  = open_pos["size_usdt"]
+                        open_pos["size_usdt"]           = round(open_pos["size_usdt"] * (1 - close_frac), 2)
+                        open_pos["realized_partial_pnl"] = p_pnl
+                        open_pos["partial_closed"]       = True
+                        continue
+
+                elif not open_pos.get("trailing_active"):
+                    # FAZA 2: partial zrobiony. 75% do TP -> aktywuj trailing na resztce.
+                    # SL (oryginalny, pelny) nadal chroni resztke do tego momentu.
+                    tp75_p = entry + (tp_p - entry) * 0.75 if side == "LONG" else entry - (entry - tp_p) * 0.75
+                    hit_tp75 = (hi >= tp75_p) if side == "LONG" else (lo <= tp75_p)
+                    hit_sl   = (lo <= sl_p) if side == "LONG" else (hi >= sl_p)
+                    if hit_tp75 and hit_sl:
+                        hit_tp75 = False
+
+                    if hit_sl:
+                        _finalize_close(sl_p, "SL", is_sl=True)
+                        continue
+                    elif hit_tp75:
+                        open_pos["trailing_active"] = True
+                        open_pos["peak_price"] = hi if side == "LONG" else lo
+                        continue
+
+                else:
+                    # FAZA 3: trailing aktywny na resztce (25%). Cel = 150% oryg. TP.
+                    # Trailing-stop = 85% szczytowego pnl% od entry (ratchet, nigdy w dol).
+                    peak = open_pos["peak_price"]
+                    peak = max(peak, hi) if side == "LONG" else min(peak, lo)
+                    open_pos["peak_price"] = peak
+
+                    if side == "LONG":
+                        peak_pct = (peak - entry) / entry * 100
+                        tp_pct   = (tp_p - entry) / entry * 100
+                    else:
+                        peak_pct = (entry - peak) / entry * 100
+                        tp_pct   = (entry - tp_p) / entry * 100
+                    trail_stop_pct  = peak_pct * 0.85
+                    full_target_pct = tp_pct * 1.5
+                    trail_stop_p  = entry * (1 + trail_stop_pct / 100) if side == "LONG" else entry * (1 - trail_stop_pct / 100)
+                    full_target_p = entry * (1 + full_target_pct / 100) if side == "LONG" else entry * (1 - full_target_pct / 100)
+
+                    hit_target = (hi >= full_target_p) if side == "LONG" else (lo <= full_target_p)
+                    hit_trail  = (lo <= trail_stop_p) if side == "LONG" else (hi >= trail_stop_p)
+
+                    if hit_target:
+                        _finalize_close(full_target_p, "TP150", is_sl=False)
+                        continue
+                    elif hit_trail:
+                        _finalize_close(trail_stop_p, "TRAIL", is_sl=False)
+                        continue
 
             # ── PYRAMID LAYER ─────────────────────────────────────────
             if (open_pos is not None and enable_pyramid
