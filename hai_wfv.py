@@ -96,6 +96,20 @@ SNIPER_FEATURES = [
     "trend_1d", "trend_4h", "adx_14", "volume_ratio",
     "price_position_bb", "bb_bandwidth_pct",
 ]
+# Profil TREND/REV (cat_trend_6h/cat_rev_6h itd.) — zestawy z produkcji
+# model_registry/gen.SNPR/6h/*.pkl (fakt z plikow, GRANDKAMPANIA §1, 2026-08-04).
+# BUG naprawiony 2026-08-04: do tej pory train_window() uzywal SNIPER_FEATURES
+# dla WSZYSTKICH trzech profili — "trend"/"rev" w honest WFV byly bez sensu
+# duplikatem sniper pod inna nazwa (te same cechy, ta sama etykieta fast6h).
+TREND_FEATURES = [
+    "trend_1h", "trend_4h", "trend_1d", "adx_14", "momentum", "rsi_4h",
+    "volume_ratio", "taker_buy_ratio", "atr_pct", "of_cvd_chg_24h", "cvd_x_adx",
+]
+REV_FEATURES = [
+    "rsi", "rsi_4h", "ema_mid_r", "ema_slow_r", "price_position_bb",
+    "bb_bandwidth_pct", "fib_dist_pct", "sr_dist_pct", "volume_zscore", "atr_pct",
+]
+PROFILE_FEATURES = {"sniper": SNIPER_FEATURES, "trend": TREND_FEATURES, "rev": REV_FEATURES}
 
 # lgb_multi_horizon.pkl: horizons_trained = [4,6,8,16,24,36,48,72]
 MULTI_HORIZONS = [4, 6, 8, 16, 24, 36, 48, 72]
@@ -368,7 +382,12 @@ def train_window(df_train, models, mt):
         elif profile in ("sniper", "trend", "rev"):
             df_use = df_train
             lbl = label_col(6)                # fast6h
-            feats = SNIPER_FEATURES
+            feats_wanted = PROFILE_FEATURES[profile]
+            feats = [f for f in feats_wanted if f in df_train.columns]
+            _missing = [f for f in feats_wanted if f not in df_train.columns]
+            if _missing:
+                log.warning(f"    {name}: brak kolumn {_missing} w datasecie — "
+                            f"{profile} jedzie na {len(feats)}/{len(feats_wanted)} cech")
         elif profile == "sdabl":
             df_use = df_train; lbl = label_col(horizon); feats = SD_ABL_FEATURES
         elif profile == "plac":
