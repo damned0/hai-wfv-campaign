@@ -1,0 +1,10 @@
+{
+  "name": "RF-sniper-feat",
+  "description": "rf_sniper na rdzeniu 11 (SNIPER_FEATURES) + cechy udokumentowane jako pomagajace RF (ml_trainer.py audyt 2026-07-04: fear_greed+BTC kontekst podnosi RF acc 0.564->0.596, szkodzi LGB/XGB/CAT) + kilka z dedykowanego zestawu RF (taker_buy_ratio, sr_node_strength).",
+  "created": "2026-08-05",
+  "models": ["rf_sniper_6h"],
+  "feature_mix": {
+    "rf_sniper_6h": {"add": ["fear_greed", "btc_trend_1h", "btc_trend_4h", "btc_trend_1d", "btc_rsi_4h", "taker_buy_ratio", "sr_node_strength"], "remove": []}
+  },
+  "expected_weights": "auto (precision-basis)"
+}
