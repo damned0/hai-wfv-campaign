@@ -1851,7 +1851,10 @@ class Backtester:
                 "model_attribution": {},
             }
 
-        wins   = sum(1 for t in trades if t["result"] == "TP")
+        # 2026-08-05: win = wynik finansowy (pnl_usdt>0), NIE etykieta "result".
+        # Partial-TP (2026-08-04) zmienil etykiety na SL/TP150/TRAIL - literalne
+        # "TP" juz nigdy nie powstaje, wiec kazdy check == "TP" dawal zawsze 0.
+        wins   = sum(1 for t in trades if t["pnl_usdt"] > 0)
         losses = total - wins
         wr     = wins / total * 100
         pnl    = sum(t["pnl_usdt"] for t in trades)
@@ -1881,7 +1884,7 @@ class Backtester:
             if not ts:
                 return {"count": 0, "win_rate": 0, "pnl": 0, "pf": 0,
                         "bb_quality_pct": 0, "bb_lt25_pct": 0, "bb_gt75_pct": 0}
-            w    = sum(1 for t in ts if t["result"] == "TP")
+            w    = sum(1 for t in ts if t["pnl_usdt"] > 0)
             spnl = sum(t["pnl_usdt"] for t in ts)
             gw   = sum(t["pnl_usdt"] for t in ts if t["pnl_usdt"] > 0)
             gl   = abs(sum(t["pnl_usdt"] for t in ts if t["pnl_usdt"] < 0))
@@ -1904,7 +1907,7 @@ class Backtester:
             rt   = [t for t in trades if t.get("regime") == rid]
             if not rt:
                 return {"count": 0, "win_rate": 0, "pf": 0, "pnl": 0}
-            rw   = sum(1 for t in rt if t["result"] == "TP")
+            rw   = sum(1 for t in rt if t["pnl_usdt"] > 0)
             rpnl = sum(t["pnl_usdt"] for t in rt)
             rgw  = sum(t["pnl_usdt"] for t in rt if t["pnl_usdt"] > 0)
             rgl  = abs(sum(t["pnl_usdt"] for t in rt if t["pnl_usdt"] < 0))
@@ -1919,17 +1922,17 @@ class Backtester:
             st = [t for t in trades if t.get("session") == name]
             if not st:
                 return {"count": 0, "win_rate": 0}
-            sw = sum(1 for t in st if t["result"] == "TP")
+            sw = sum(1 for t in st if t["pnl_usdt"] > 0)
             return {"count": len(st), "win_rate": round(sw / len(st) * 100, 1)}
 
         # Pyramiding
         pyr  = [t for t in trades if t.get("had_pyramid")]
         base = [t for t in trades if not t.get("had_pyramid")]
-        pw   = sum(1 for t in pyr if t["result"] == "TP")
+        pw   = sum(1 for t in pyr if t["pnl_usdt"] > 0)
         ppnl = sum(t.get("pyramid_pnl", 0) for t in pyr)
         pgw  = sum(t["pnl_usdt"] for t in pyr if t["pnl_usdt"] > 0)
         pgl  = abs(sum(t["pnl_usdt"] for t in pyr if t["pnl_usdt"] < 0))
-        bw   = sum(1 for t in base if t["result"] == "TP")
+        bw   = sum(1 for t in base if t["pnl_usdt"] > 0)
         bgw  = sum(t["pnl_usdt"] for t in base if t["pnl_usdt"] > 0)
         bgl  = abs(sum(t["pnl_usdt"] for t in base if t["pnl_usdt"] < 0))
 
@@ -1944,7 +1947,7 @@ class Backtester:
                 "pf":     round(sum(t["pnl_usdt"] for t in st if t["pnl_usdt"] > 0) /
                                 max(abs(sum(t["pnl_usdt"] for t in st if t["pnl_usdt"] < 0)), 0.01), 2),
                 "pnl":    round(sum(t["pnl_usdt"] for t in st), 2),
-                "wr":     round(sum(1 for t in st if t["result"] == "TP") / len(st) * 100, 1),
+                "wr":     round(sum(1 for t in st if t["pnl_usdt"] > 0) / len(st) * 100, 1),
             }
             for s, st in by_sym.items()
         ], key=lambda x: x["pf"], reverse=True)[:5]
@@ -1959,7 +1962,7 @@ class Backtester:
         model_attribution = {
             m: {
                 "count":    len(mt),
-                "win_rate": round(float(sum(1 for t in mt if t["result"] == "TP") / len(mt) * 100), 1),
+                "win_rate": round(float(sum(1 for t in mt if t["pnl_usdt"] > 0) / len(mt) * 100), 1),
                 "pf":       round(float(sum(t["pnl_usdt"] for t in mt if t["pnl_usdt"] > 0) /
                                   max(abs(sum(t["pnl_usdt"] for t in mt if t["pnl_usdt"] < 0)), 0.01)), 2),
                 "pnl":      round(float(sum(t["pnl_usdt"] for t in mt)), 2),
@@ -1975,7 +1978,7 @@ class Backtester:
         _fl: Dict[str, list] = {}
         for _t in trades:
             _fs = _t.get("feature_snapshot") or {}
-            _bucket = _fw if _t["result"] == "TP" else _fl
+            _bucket = _fw if _t["pnl_usdt"] > 0 else _fl
             for _f, _v in _fs.items():
                 if _v is not None:
                     _bucket.setdefault(_f, []).append(_v)
