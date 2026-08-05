@@ -1278,15 +1278,23 @@ class Backtester:
                     self.capital += total_pnl
                     daily_pnl   += total_pnl
 
-                    if not is_sl:
+                    # 2026-08-05 (zlapane przez Hauzera): sizing po stracie (SIZE_SCALE_BY_LOSSES)
+                    # MUSI patrzec na faktyczny wynik finansowy (total_pnl), nie na to KTORY branch
+                    # zamknal pozycje (is_sl). Przy partial-TP trade moze zamknac sie jako "SL" (SL
+                    # trafil na resztce) a mimo to byc NETTO zyskowny (partial zbankowal wiecej niz
+                    # reszta stracila - patrz §9.J/§11: 36.5%/103 takich przypadkow w smoke teście).
+                    # Stary kod (`if not is_sl`) traktowal taki trade jako strate -> kurczyl pozycje
+                    # mimo ze konto realnie zarobilo. is_sl nadal steruje slippage/cooldown (to o
+                    # MECHANICE ceny - SL faktycznie zostal dotkniety), ale NIE o sizing.
+                    if total_pnl > 0:
                         consecutive_losses = 0
                         pyramid_blocked    = False
                     else:
                         consecutive_losses = min(consecutive_losses + 1, 1)
                         if had_pyramid:
                             pyramid_blocked = True
-                        if enable_cooldown:
-                            symbol_cooldown_until = ts_ms + SL_COOLDOWN_MINUTES * 60_000
+                    if is_sl and enable_cooldown:
+                        symbol_cooldown_until = ts_ms + SL_COOLDOWN_MINUTES * 60_000
 
                     trades.append({
                         "symbol":      symbol,
