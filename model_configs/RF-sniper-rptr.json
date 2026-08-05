@@ -1,0 +1,18 @@
+{
+  "name": "RF-sniper-rptr",
+  "description": "rf_sniper na rdzeniu 11 (SNIPER_FEATURES) + specjalistyczny zestaw RF wg rptr (external feature-eng review, 2026-08-05): stoch_rsi, cci_20, di_spread, macd_signal_dist, structure_bias, range_compression, momentum_20, atr_zscore_20, volume_zscore_50, vwap_distance (alias vwap_dev), htf_trend_4h (alias trend_4h), + wpiete usniete x_obv_slope_24h/x_weekend. basis_zscore pominiety (brak danych spot).",
+  "created": "2026-08-05",
+  "models": ["rf_sniper_6h"],
+  "feature_mix": {
+    "rf_sniper_6h": {
+      "add": [
+        "r_stoch_rsi", "r_cci_20", "r_di_spread", "r_macd_signal_dist",
+        "r_structure_bias", "r_range_compression", "r_momentum_20",
+        "r_atr_zscore_20", "r_volume_zscore_50", "r_vwap_distance", "r_htf_trend_4h",
+        "x_obv_slope_24h", "x_weekend"
+      ],
+      "remove": []
+    }
+  },
+  "expected_weights": "auto (precision-basis)"
+}

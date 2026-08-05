@@ -1,0 +1,13 @@
+{
+  "name": "XGB-sniper-rptr",
+  "description": "xgb_sniper na rdzeniu 11 (SNIPER_FEATURES) + dodatek wg rptr (2026-08-05): rptr zaleca dla XGBoost 'core + interakcje' (bardziej agresywny niz LGB, mniej brudny niz ET). 4 dodatki: 2 interakcje (rsi_x_funding, atr_pct_x_vol_zscore) + momentum_20 + range_compression.",
+  "created": "2026-08-05",
+  "models": ["xgb_sniper_6h"],
+  "feature_mix": {
+    "xgb_sniper_6h": {
+      "add": ["e_rsi_x_funding", "e_atr_pct_x_vol_zscore", "r_momentum_20", "r_range_compression"],
+      "remove": []
+    }
+  },
+  "expected_weights": "auto (precision-basis)"
+}

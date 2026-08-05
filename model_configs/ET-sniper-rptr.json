@@ -1,0 +1,23 @@
+{
+  "name": "ET-sniper-rptr",
+  "description": "et_sniper na rdzeniu 11 (SNIPER_FEATURES) + PELNY zestaw wg rptr (external feature-eng review, 2026-08-05): rptr zaleca ET = Core + wszystko z RF + najbardziej 'brudne' SMC/interakcje. Wiec: to samo co RF-sniper-rptr (stoch_rsi/cci/di_spread/macd_signal_dist/structure_bias/range_compression/momentum_20/atr_zscore_20/volume_zscore_50/vwap_distance/htf_trend_4h) + SMC/Ichimoku/interakcje (liquidity_sweep_high/low, fvg_size/direction, bos_choch, equal_highs_lows_count, ichimoku_cloud_thickness, tk_cross, volume_delta_imbalance, orderblock_strength, phantomflow_score alias sr_node_strength, rsi_x_funding, atr_pct_x_vol_zscore) + x_obv_slope_24h/x_weekend.",
+  "created": "2026-08-05",
+  "models": ["et_sniper_6h"],
+  "feature_mix": {
+    "et_sniper_6h": {
+      "add": [
+        "r_stoch_rsi", "r_cci_20", "r_di_spread", "r_macd_signal_dist",
+        "r_structure_bias", "r_range_compression", "r_momentum_20",
+        "r_atr_zscore_20", "r_volume_zscore_50", "r_vwap_distance", "r_htf_trend_4h",
+        "e_liquidity_sweep_high", "e_liquidity_sweep_low",
+        "e_fvg_size", "e_fvg_direction", "e_bos_choch",
+        "e_equal_highs_lows_count", "e_ichimoku_cloud_thickness", "e_tk_cross",
+        "e_volume_delta_imbalance", "e_orderblock_strength", "e_phantomflow_score",
+        "e_rsi_x_funding", "e_atr_pct_x_vol_zscore",
+        "x_obv_slope_24h", "x_weekend"
+      ],
+      "remove": []
+    }
+  },
+  "expected_weights": "auto (precision-basis)"
+}
