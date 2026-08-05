@@ -1,0 +1,18 @@
+{
+  "name": "ET-sniper-rptr-lean",
+  "description": "2026-08-05, na wyrazna prosbe (poprzedni ET-sniper-rptr=37 cech dawal NO_DATA na kazdym progu, 'rozwodnione'). Nowy rdzen 10: z SNIPER_FEATURES (11) zostaje TYLKO 5 (rsi_4h, atr_pct, momentum, trend_4h, adx_14) - reszta USUNIETA i zastapiona unikalnymi cechami rptr (RF-lean core) + wybrane SMC/interakcje (nie caly bank e_*, tylko najsilniejsze). Razem 18 cech (5 wspolnych + 13 unikalnych) - max 5 pokrywa sie z boosting-algo core.",
+  "created": "2026-08-05",
+  "models": ["et_sniper_6h"],
+  "feature_mix": {
+    "et_sniper_6h": {
+      "remove": ["rsi_1d", "ema_mid_r", "trend_1d", "volume_ratio", "price_position_bb", "bb_bandwidth_pct"],
+      "add": [
+        "r_structure_bias", "r_volume_zscore_50", "r_vwap_distance", "r_range_compression", "r_stoch_rsi",
+        "e_liquidity_sweep_high", "e_liquidity_sweep_low", "e_bos_choch", "e_tk_cross",
+        "e_rsi_x_funding", "e_atr_pct_x_vol_zscore",
+        "x_obv_slope_24h", "x_weekend"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)"
+}

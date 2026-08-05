@@ -1,0 +1,17 @@
+{
+  "name": "RF-sniper-rptr-lean",
+  "description": "2026-08-05, na wyrazna prosbe (poprzedni RF-sniper-rptr=24 cech dawal NO_DATA, 'rozwodnione'). Nowy rdzen 10: z SNIPER_FEATURES (11) zostaje TYLKO 5 (rsi_4h, atr_pct, momentum, trend_4h, adx_14) - reszta (rsi_1d, ema_mid_r, trend_1d, volume_ratio, price_position_bb, bb_bandwidth_pct) USUNIETA i zastapiona unikalnymi cechami rptr, ktorych LGB/CAT/XGB NIE maja. Razem 16 cech (5 wspolnych + 11 unikalnych) - max 5 pokrywa sie z boosting-algo core, cel: realna dekorelacja.",
+  "created": "2026-08-05",
+  "models": ["rf_sniper_6h"],
+  "feature_mix": {
+    "rf_sniper_6h": {
+      "remove": ["rsi_1d", "ema_mid_r", "trend_1d", "volume_ratio", "price_position_bb", "bb_bandwidth_pct"],
+      "add": [
+        "r_structure_bias", "r_volume_zscore_50", "r_vwap_distance", "r_range_compression", "r_stoch_rsi",
+        "r_di_spread", "r_atr_zscore_20", "r_macd_signal_dist", "r_htf_trend_4h",
+        "x_obv_slope_24h", "x_weekend"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)"
+}
