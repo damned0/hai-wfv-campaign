@@ -1,0 +1,20 @@
+{
+  "name": "RF-sniper-necz",
+  "description": "AUDYT/STAGING (2026-08-05) - NIE URUCHAMIAC przed implementacja calc_ds_features + calc_z_features. rf_sniper: rdzen 11 + 11 rptr + 4 ds_* + 4 z_* (wg newedge.md tabeli RF ~30 razem). Kod ds_*/z_* NIE ISTNIEJE jeszcze - uruchomienie da 'brak kolumn' i realnie = tylko rptr.",
+  "created": "2026-08-05",
+  "models": ["rf_sniper_6h"],
+  "feature_mix": {
+    "rf_sniper_6h": {
+      "add": [
+        "r_stoch_rsi", "r_cci_20", "r_di_spread", "r_macd_signal_dist",
+        "r_structure_bias", "r_range_compression", "r_momentum_20",
+        "r_atr_zscore_20", "r_volume_zscore_50", "r_vwap_distance", "r_htf_trend_4h",
+        "x_obv_slope_24h", "x_weekend",
+        "ds_cvd_net_1h", "ds_oi_usd_chg_24h", "ds_corr_btc_24h", "ds_cvd_slope_24h",
+        "z_vol_regime", "z_mean_reversion_pressure", "z_rel_strength_alt", "z_range_expansion"
+      ],
+      "remove": []
+    }
+  },
+  "expected_weights": "auto (precision-basis)"
+}

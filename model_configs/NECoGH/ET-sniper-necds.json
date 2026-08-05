@@ -1,0 +1,29 @@
+{
+  "name": "ET-sniper-necds",
+  "description": "AUDYT/STAGING (2026-08-05) - NIE URUCHAMIAC przed implementacja calc_ds_features. et_sniper: rdzen 11 + 26 rptr (r_*+e_*, pelny) + 23 ds_* PELNY (wg newedge.md - ET dostaje najwiecej 'obcego' materialu, cel ~72 razem z z_*). Kod ds_* NIE ISTNIEJE jeszcze - uruchomienie da 'brak kolumn' warning i realnie = tylko rptr (ET-sniper-rptr).",
+  "created": "2026-08-05",
+  "models": ["et_sniper_6h"],
+  "feature_mix": {
+    "et_sniper_6h": {
+      "add": [
+        "r_stoch_rsi", "r_cci_20", "r_di_spread", "r_macd_signal_dist",
+        "r_structure_bias", "r_range_compression", "r_momentum_20",
+        "r_atr_zscore_20", "r_volume_zscore_50", "r_vwap_distance", "r_htf_trend_4h",
+        "e_liquidity_sweep_high", "e_liquidity_sweep_low",
+        "e_fvg_size", "e_fvg_direction", "e_bos_choch",
+        "e_equal_highs_lows_count", "e_ichimoku_cloud_thickness", "e_tk_cross",
+        "e_volume_delta_imbalance", "e_orderblock_strength", "e_phantomflow_score",
+        "e_rsi_x_funding", "e_atr_pct_x_vol_zscore",
+        "x_obv_slope_24h", "x_weekend",
+        "ds_cvd_net_1h", "ds_cvd_slope_24h", "ds_cvd_zscore_30d", "ds_cvd_acceleration", "ds_cvd_x_price",
+        "ds_taker_vol_ls", "ds_liquid_mmap_oi", "ds_oi_usd_1h", "ds_oi_usd_chg_24h",
+        "ds_oi_price_div", "ds_oi_x_funding", "ds_oi_funding_squeeze",
+        "ds_funding_zscore_24h", "ds_funding_zscore_7d", "ds_funding_extreme", "ds_funding_price_div",
+        "ds_btc_rel_strength", "ds_altseason", "ds_corr_btc_24h", "ds_beta_btc", "ds_gold_rel",
+        "ds_weekend_flow", "ds_range_loc_1d"
+      ],
+      "remove": []
+    }
+  },
+  "expected_weights": "auto (precision-basis)"
+}

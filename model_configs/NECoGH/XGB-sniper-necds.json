@@ -1,0 +1,16 @@
+{
+  "name": "XGB-sniper-necds",
+  "description": "AUDYT/STAGING (2026-08-05) - NIE URUCHAMIAC przed implementacja calc_ds_features. xgb_sniper: rdzen 11 + 4 rptr (interakcje) + 4 ds_* (oi/funding, wg newedge.md tabeli XGB ~19). Kod ds_* NIE ISTNIEJE jeszcze w features.py/ml_trainer.py - uruchomienie da 'brak kolumn' warning i realnie = tylko rptr.",
+  "created": "2026-08-05",
+  "models": ["xgb_sniper_6h"],
+  "feature_mix": {
+    "xgb_sniper_6h": {
+      "add": [
+        "e_rsi_x_funding", "e_atr_pct_x_vol_zscore", "r_momentum_20", "r_range_compression",
+        "ds_oi_x_funding", "ds_oi_funding_squeeze", "ds_funding_zscore_24h", "ds_funding_price_div"
+      ],
+      "remove": []
+    }
+  },
+  "expected_weights": "auto (precision-basis)"
+}

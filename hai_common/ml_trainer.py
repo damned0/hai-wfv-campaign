@@ -41,7 +41,7 @@ warnings.filterwarnings('ignore', category=UserWarning)
 logger = logging.getLogger(__name__)
 
 # Sciezki
-WH_BASE = Path('/root/ProjektHAI/data_warehouse/ohlcv/binance')
+WH_BASE = Path(os.environ.get("HAI_WH", "/root/ProjektHAI/data_warehouse")) / 'ohlcv' / 'binance'
 MODELS_DIR = Path(__file__).resolve().parent.parent / 'data' / 'models'
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -535,6 +535,160 @@ def calc_fib_dist(closes: np.ndarray, sh_level_ff: np.ndarray, sl_level_ff: np.n
     return np.where(valid, dist, 0.0)
 
 
+def _eq_hl_window_count(window: np.ndarray, tolerance: float = 0.0015) -> float:
+    """Pomocnicza do rolling().apply: liczba prawie-rownych par w oknie (O(window^2),
+    window mala stala=20 wiec akceptowalne w apply)."""
+    m = len(window)
+    cnt = 0
+    for ii in range(m):
+        for jj in range(ii + 1, m):
+            if abs(window[ii] - window[jj]) <= tolerance * max(abs(window[ii]), 1e-8):
+                cnt += 1
+    return float(cnt)
+
+
+def _ob_strength_window(window: np.ndarray) -> float:
+    """Pomocnicza do rolling().apply: sila+wiek najwiekszego impulsu w oknie closes."""
+    rets = np.diff(window) / window[:-1]
+    if len(rets) == 0:
+        return 0.0
+    idx = int(np.argmax(np.abs(rets)))
+    age = len(rets) - idx
+    return float(abs(rets[idx]) * 100 / max(age, 1))
+
+
+def calc_rptr_features(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray,
+                        volumes: np.ndarray, rsi_arr: np.ndarray, atr_arr: np.ndarray) -> Dict[str, np.ndarray]:
+    """Wektoryzowane RF/ET specjalistyczne cechy wg rptr (external feature-eng
+    review, 2026-08-05) - parytet formul z hai_common.features (live). Trailing
+    rolling (min_periods=window, bez center=True poza structure_bias ktore uzywa
+    tego samego confirm_idx no-lookahead patternu co calc_swing_sr). basis_zscore
+    i funding_zscore_8h/24h pominiete (brak danych/historii - jak w wersji live)."""
+    n = len(closes)
+    c = pd.Series(closes); h = pd.Series(highs); l = pd.Series(lows); v = pd.Series(volumes)
+    rsi_s = pd.Series(rsi_arr); atr_s = pd.Series(atr_arr)
+    out: Dict[str, np.ndarray] = {}
+
+    # --- RF specialist ---
+    r_min = rsi_s.rolling(14, min_periods=14).min()
+    r_max = rsi_s.rolling(14, min_periods=14).max()
+    out['r_stoch_rsi'] = ((rsi_s - r_min) / (r_max - r_min).replace(0, np.nan) * 100).fillna(50.0).values
+
+    tp = (h + l + c) / 3.0
+    sma20 = tp.rolling(20, min_periods=20).mean()
+    mad20 = (tp - sma20).abs().rolling(20, min_periods=20).mean()
+    out['r_cci_20'] = ((tp - sma20) / (0.015 * mad20.replace(0, np.nan))).fillna(0.0).values
+
+    up_move = h.diff()
+    down_move = -l.diff()
+    dm_plus = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0))
+    dm_minus = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0))
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    atr_w = tr.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    pdi = dm_plus.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean() / atr_w.replace(0, np.nan) * 100
+    mdi = dm_minus.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean() / atr_w.replace(0, np.nan) * 100
+    out['r_di_spread'] = (pdi - mdi).fillna(0.0).values
+
+    ema12 = calc_ema(closes, 12); ema26 = calc_ema(closes, 26)
+    macd_line = ema12 - ema26
+    signal_line = calc_ema(macd_line, 9)
+    out['r_macd_signal_dist'] = np.where(closes > 0, (macd_line - signal_line) / closes * 100, 0.0)
+
+    out['r_momentum_20'] = ((c / c.shift(20) - 1) * 100).fillna(0.0).values
+
+    atr_mean20 = atr_s.rolling(20, min_periods=20).mean()
+    atr_std20 = atr_s.rolling(20, min_periods=20).std().replace(0, np.nan)
+    out['r_atr_zscore_20'] = ((atr_s - atr_mean20) / atr_std20).fillna(0.0).values
+
+    v_mean50 = v.rolling(50, min_periods=50).mean()
+    v_std50 = v.rolling(50, min_periods=50).std().replace(0, np.nan)
+    out['r_volume_zscore_50'] = ((v - v_mean50) / v_std50).fillna(0.0).values
+
+    short_range = h.rolling(6, min_periods=6).max() - l.rolling(6, min_periods=6).min()
+    long_range = (h.rolling(24, min_periods=24).max() - l.rolling(24, min_periods=24).min()).replace(0, np.nan)
+    out['r_range_compression'] = (short_range / long_range).fillna(1.0).values
+
+    tvol24 = v.rolling(24, min_periods=24).sum().replace(0, np.nan)
+    vwap24 = (tp * v).rolling(24, min_periods=24).sum() / tvol24
+    out['r_vwap_distance'] = ((c / vwap24.replace(0, np.nan) - 1) * 100).fillna(0.0).values
+
+    # structure_bias: HH/HL(1) vs LH/LL(-1) na potwierdzonych swingach, sam
+    # no-lookahead confirm_idx pattern co calc_swing_sr (idx+lookback zanim znany).
+    lookback = 5
+    win = 2 * lookback + 1
+    roll_max = h.rolling(win, center=True, min_periods=win).max()
+    roll_min = l.rolling(win, center=True, min_periods=win).min()
+    is_sh = (h == roll_max).fillna(False).values
+    is_sl = (l == roll_min).fillna(False).values
+    sh_seq = sorted((idx + lookback, highs[idx]) for idx in np.where(is_sh)[0] if idx + lookback < n)
+    sl_seq = sorted((idx + lookback, lows[idx]) for idx in np.where(is_sl)[0] if idx + lookback < n)
+    structure_bias = np.zeros(n)
+    si = li = 0
+    ph1 = ph2 = pl1 = pl2 = None
+    cur_bias = 0.0
+    for idx in range(n):
+        while si < len(sh_seq) and sh_seq[si][0] == idx:
+            ph2 = ph1; ph1 = sh_seq[si][1]; si += 1
+        while li < len(sl_seq) and sl_seq[li][0] == idx:
+            pl2 = pl1; pl1 = sl_seq[li][1]; li += 1
+        if ph1 is not None and ph2 is not None and pl1 is not None and pl2 is not None:
+            hh = ph1 > ph2; hl = pl1 > pl2
+            cur_bias = 1.0 if (hh and hl) else (-1.0 if (not hh and not hl) else 0.0)
+        structure_bias[idx] = cur_bias
+    out['r_structure_bias'] = structure_bias
+
+    # --- ET specialist (SMC + Ichimoku) ---
+    prior_high20 = h.shift(1).rolling(20, min_periods=20).max()
+    prior_low20 = l.shift(1).rolling(20, min_periods=20).min()
+    out['e_liquidity_sweep_high'] = ((h > prior_high20) & (c < prior_high20)).fillna(False).astype(float).values
+    out['e_liquidity_sweep_low'] = ((l < prior_low20) & (c > prior_low20)).fillna(False).astype(float).values
+
+    h_2 = h.shift(2); l_2 = l.shift(2)
+    bull_gap = l - h_2
+    bear_gap = l_2 - h
+    fvg_size = np.where(bull_gap > 0, bull_gap / c.replace(0, np.nan) * 100,
+                np.where(bear_gap > 0, bear_gap / c.replace(0, np.nan) * 100, 0.0))
+    fvg_dir = np.where(bull_gap > 0, 1.0, np.where(bear_gap > 0, -1.0, 0.0))
+    out['e_fvg_size'] = np.nan_to_num(fvg_size)
+    out['e_fvg_direction'] = np.nan_to_num(fvg_dir)
+
+    cur_h10 = h.rolling(10, min_periods=10).max()
+    cur_l10 = l.rolling(10, min_periods=10).min()
+    prior_h10 = cur_h10.shift(10); prior_l10 = cur_l10.shift(10)
+    bos = np.where(cur_h10 > prior_h10, 1.0, np.where(cur_l10 < prior_l10, -1.0, 0.0))
+    out['e_bos_choch'] = np.nan_to_num(bos)
+
+    eq_h = h.rolling(20, min_periods=20).apply(_eq_hl_window_count, raw=True)
+    eq_l = l.rolling(20, min_periods=20).apply(_eq_hl_window_count, raw=True)
+    out['e_equal_highs_lows_count'] = (eq_h.fillna(0) + eq_l.fillna(0)).values
+
+    tenkan = (h.rolling(9, min_periods=9).max() + l.rolling(9, min_periods=9).min()) / 2
+    kijun = (h.rolling(26, min_periods=26).max() + l.rolling(26, min_periods=26).min()) / 2
+    senkou_a = (tenkan + kijun) / 2
+    senkou_b = (h.rolling(52, min_periods=52).max() + l.rolling(52, min_periods=52).min()) / 2
+    thickness = (senkou_a - senkou_b).abs() / c.replace(0, np.nan) * 100
+    tk_cross = np.where(tenkan > kijun, 1.0, np.where(tenkan < kijun, -1.0, 0.0))
+    out['e_ichimoku_cloud_thickness'] = thickness.fillna(0.0).values
+    out['e_tk_cross'] = np.nan_to_num(tk_cross)
+
+    rets_sign = np.sign(c.diff())
+    signed_vol = v * rets_sign
+    net20 = signed_vol.rolling(20, min_periods=20).sum()
+    total20 = v.rolling(20, min_periods=20).sum().replace(0, np.nan)
+    out['e_volume_delta_imbalance'] = (net20 / total20).fillna(0.0).values
+
+    ob = c.rolling(21, min_periods=21).apply(_ob_strength_window, raw=True)
+    out['e_orderblock_strength'] = ob.fillna(0.0).values
+
+    # x_obv_slope_24h (dormant x_* z features.py, 2026-08-05 - parytet z live:
+    # ten sam wzor co e_volume_delta_imbalance, tylko okno 24 zamiast 20)
+    net24 = signed_vol.rolling(24, min_periods=24).sum()
+    total24 = v.rolling(24, min_periods=24).sum().replace(0, np.nan)
+    out['x_obv_slope_24h'] = (net24 / total24).fillna(0.0).values
+
+    return out
+
+
 def triple_barrier_label(cur: float, atr: float, highs: np.ndarray, lows: np.ndarray,
                           i: int, n: int, lookahead: int, tp_mult: float, sl_mult: float) -> int:
     """Triple Barrier 3-klasowy (0=NEUTRAL,1=LONG,2=SHORT), parametryzowany po
@@ -824,6 +978,7 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
     bars_cross_arr = calc_bars_since_cross(closes, 20, 50, 100)  # wiek trendu EMA20/50 (A/B)
     sr_dist_arr, sr_strength_arr, sh_level_ff, sl_level_ff = calc_swing_sr(closes, highs, lows)
     fib_dist_arr = calc_fib_dist(closes, sh_level_ff, sl_level_ff)
+    rptr_arr = calc_rptr_features(closes, highs, lows, volumes, rsi_arr, atr_arr)
 
     # === NEW v2.0: PRE-COMPUTE 4H (raz dla calego szeregu 4h) ===
     closes_4h_all = df_4h['close'].values.astype(np.float64)
@@ -1150,6 +1305,35 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
             'sr_dist_pct': float(sr_dist_arr[i]),
             'sr_node_strength': float(sr_strength_arr[i]),
             'fib_dist_pct': float(fib_dist_arr[i]),
+            # Cechy RPTR: RF/ET specjalistyczne (2026-08-05) - parytet z live
+            # (hai_common.features rptr_feats). Aliasy (htf_trend_4h/phantomflow)
+            # i interakcje (O(1), zero dodatkowego kosztu) liczone tu inline.
+            'r_stoch_rsi': float(rptr_arr['r_stoch_rsi'][i]),
+            'r_cci_20': float(rptr_arr['r_cci_20'][i]),
+            'r_di_spread': float(rptr_arr['r_di_spread'][i]),
+            'r_macd_signal_dist': float(rptr_arr['r_macd_signal_dist'][i]),
+            'r_momentum_20': float(rptr_arr['r_momentum_20'][i]),
+            'r_atr_zscore_20': float(rptr_arr['r_atr_zscore_20'][i]),
+            'r_volume_zscore_50': float(rptr_arr['r_volume_zscore_50'][i]),
+            'r_range_compression': float(rptr_arr['r_range_compression'][i]),
+            'r_vwap_distance': float(rptr_arr['r_vwap_distance'][i]),
+            'r_structure_bias': float(rptr_arr['r_structure_bias'][i]),
+            'r_htf_trend_4h': float(trend_4h),
+            'e_liquidity_sweep_high': float(rptr_arr['e_liquidity_sweep_high'][i]),
+            'e_liquidity_sweep_low': float(rptr_arr['e_liquidity_sweep_low'][i]),
+            'e_fvg_size': float(rptr_arr['e_fvg_size'][i]),
+            'e_fvg_direction': float(rptr_arr['e_fvg_direction'][i]),
+            'e_bos_choch': float(rptr_arr['e_bos_choch'][i]),
+            'e_equal_highs_lows_count': float(rptr_arr['e_equal_highs_lows_count'][i]),
+            'e_ichimoku_cloud_thickness': float(rptr_arr['e_ichimoku_cloud_thickness'][i]),
+            'e_tk_cross': float(rptr_arr['e_tk_cross'][i]),
+            'e_volume_delta_imbalance': float(rptr_arr['e_volume_delta_imbalance'][i]),
+            'e_orderblock_strength': float(rptr_arr['e_orderblock_strength'][i]),
+            'e_phantomflow_score': float(sr_strength_arr[i]),
+            'e_rsi_x_funding': float(rsi) * float(funding_rate),
+            'e_atr_pct_x_vol_zscore': float(atr_pct) * float(volume_zscore_arr[i]),
+            'x_obv_slope_24h': float(rptr_arr['x_obv_slope_24h'][i]),
+            'x_weekend': 1.0 if dow in (5.0, 6.0) else 0.0,
             # Fear & Greed Index (audyt 2026-07-04, pelna historia 2018-dzis)
             'fear_greed': float(fear_greed),
             # BTC context (audyt 2026-07-04, korelacja altcoinow z BTC 0.6-0.85)
@@ -1396,7 +1580,9 @@ def train_models(df: pd.DataFrame, only: "list[str] | None" = None,
         rf = RandomForestClassifier(
             # n_estimators 300->200: przy 3M+ probek i class_weight='balanced' 300 drzew
             # thrashowalo pamiec (683MB wolne, swap 5.7GB, utkniete >1h bez postepu)
-            n_estimators=200, max_depth=12, min_samples_leaf=20,
+            # max_features=0.7 (2026-08-05, rptr): jawnie, zamiast domyslnego 'sqrt' -
+            # RF ma widziec wiecej cech na splicie niz ET (odwrotnie niz ET).
+            n_estimators=200, max_depth=12, min_samples_leaf=20, max_features=0.7,
             random_state=42, n_jobs=-1, class_weight=_CW3,
         )
         rf.fit(Xtr, yt)
@@ -1512,9 +1698,16 @@ def train_models(df: pd.DataFrame, only: "list[str] | None" = None,
         t0 = time.time()
         Xtr, Xva, sc, feats = _model_xy('et')
         yt, yv = _model_y('et')
+        # 2026-08-05 (rptr, diagnoza "ET/RF milcza"): ET mial IDENTYCZNE hiperparametry
+        # co RF (zero dywersyfikacji - sam problem co z cechami przed dzisiejszym
+        # portem). min_samples_leaf 20->10 (ET z definicji ma byc "szumny", nie
+        # konserwatywny jak RF), max_features=0.6 (mniej cech na split -> wiecej
+        # wariancji miedzy drzewami), bootstrap=False jawnie (klasyczny ET - kazde
+        # drzewo widzi WSZYSTKIE probki, tylko losowe progi/cechy dekoruluja),
+        # n_estimators 200->300 (wiecej drzew, zeby usredniac ten dodatkowy szum).
         et_model = ExtraTreesClassifier(
-            n_estimators=200, max_depth=12, min_samples_leaf=20,
-            random_state=42, n_jobs=-1, class_weight=_CW3,
+            n_estimators=300, max_depth=12, min_samples_leaf=10, max_features=0.6,
+            bootstrap=False, random_state=42, n_jobs=-1, class_weight=_CW3,
         )
         et_model.fit(Xtr, yt)
         m = _multiclass_metrics(yv, et_model.predict(Xva))

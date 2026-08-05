@@ -1,0 +1,13 @@
+{
+  "name": "CAT-sniper-rptr",
+  "description": "cat_sniper na rdzeniu 11 (SNIPER_FEATURES) + dodatek wg rptr (2026-08-05): rptr zaleca dla CatBoost 'core + dobre kategoryczne'. U nas brak prawdziwych cech kategorycznych w datasecie - najblizsze odpowiedniki to dyskretne/quasi-kategoryczne sygnaly (-1/0/1): structure_bias, bos_choch, fvg_direction, tk_cross. CatBoost historycznie dobrze radzi sobie z takimi splitami.",
+  "created": "2026-08-05",
+  "models": ["cat_sniper_6h"],
+  "feature_mix": {
+    "cat_sniper_6h": {
+      "add": ["r_structure_bias", "e_bos_choch", "e_fvg_direction", "e_tk_cross"],
+      "remove": []
+    }
+  },
+  "expected_weights": "auto (precision-basis)"
+}

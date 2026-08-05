@@ -7,6 +7,7 @@
 # FEATURE_NAMES (19, drzewa) / NEURAL_FEATURE_NAMES (24, MLP/LSTM/TCN/Transformer).
 # ===========================================
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 import numpy as np
@@ -35,7 +36,8 @@ def _get_macro_extended_live() -> Dict[str, float]:
         return _MACRO_EXT_LIVE_CACHE
     from pathlib import Path
     import pandas as pd
-    macro_dir = Path("/root/ProjektHAI/data_warehouse/macro")
+    import os as _os
+    macro_dir = Path(_os.environ.get("HAI_WH", "/root/ProjektHAI/data_warehouse")) / "macro"
     out = {}
     for name in _MACRO_EXT_TICKERS:
         try:
@@ -254,6 +256,185 @@ def _fib_dist_live(cur: float, sh_level: Optional[float], sl_level: Optional[flo
     return round(dist, 4)
 
 
+# ── Cechy RPTR: RF/ET specjalistyczne (2026-08-05, external feature-eng review) ──
+# Wszystkie licza sie WYLACZNIE z danych do biezacej swiecy (highs_1h/lows_1h/
+# prices_1h/volumes_1h to serie do "teraz" wlacznie) - zero lookaheadu z definicji.
+# basis_zscore (futures-spot) pominiety - brak danych spot w magazynie.
+# funding_zscore_8h/24h pominiete - brak progowo dostepnej historii funding jako
+# serii w tym miejscu (tylko punktowy funding_rate + delta 24h), nie zmyslamy
+# fałszywego z-score bez realnej dystrybucji.
+def _stoch_rsi_live(rsi_series: np.ndarray, period: int = 14) -> float:
+    if len(rsi_series) < period:
+        return 50.0
+    window = rsi_series[-period:]
+    lo, hi = float(window.min()), float(window.max())
+    if hi - lo < 1e-8:
+        return 50.0
+    return float((rsi_series[-1] - lo) / (hi - lo) * 100)
+
+
+def _cci_live(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 20) -> float:
+    if len(closes) < period:
+        return 0.0
+    tp = (highs[-period:] + lows[-period:] + closes[-period:]) / 3.0
+    sma = float(tp.mean())
+    mad = float(np.abs(tp - sma).mean())
+    if mad < 1e-8:
+        return 0.0
+    return float((tp[-1] - sma) / (0.015 * mad))
+
+
+def _di_spread_live(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> float:
+    """DI+ minus DI- (Wilder). Znak = kierunek dominujacego ruchu."""
+    n = len(closes)
+    if n < period * 3:
+        return 0.0
+    h, l, c = highs[-(period * 3):], lows[-(period * 3):], closes[-(period * 3):]
+    up_move = h[1:] - h[:-1]
+    down_move = l[:-1] - l[1:]
+    dm_plus = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    dm_minus = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
+    atr = float(tr[-period:].mean())
+    if atr < 1e-8:
+        return 0.0
+    pdi = float(dm_plus[-period:].mean()) / atr * 100
+    mdi = float(dm_minus[-period:].mean()) / atr * 100
+    return float(pdi - mdi)
+
+
+def _range_compression_live(highs: np.ndarray, lows: np.ndarray, short: int = 6, long: int = 24) -> float:
+    """Stosunek zakresu krotkiego okna do dlugiego - <1 = kompresja (przed wybiciem)."""
+    if len(highs) < long:
+        return 1.0
+    short_range = float(highs[-short:].max() - lows[-short:].min())
+    long_range = float(highs[-long:].max() - lows[-long:].min())
+    if long_range < 1e-8:
+        return 1.0
+    return float(short_range / long_range)
+
+
+def _structure_bias_live(highs: np.ndarray, lows: np.ndarray, lookback: int = 5) -> float:
+    """HH+HL = 1.0 (struktura byczno), LH+LL = -1.0 (niedzwiedzia), inaczej 0.0."""
+    n = len(highs)
+    if n < lookback * 6:
+        return 0.0
+    swing_highs, swing_lows = [], []
+    for i in range(lookback, n - lookback):
+        if highs[i] == highs[i - lookback:i + lookback + 1].max():
+            swing_highs.append(highs[i])
+        if lows[i] == lows[i - lookback:i + lookback + 1].min():
+            swing_lows.append(lows[i])
+    if len(swing_highs) < 2 or len(swing_lows) < 2:
+        return 0.0
+    hh = swing_highs[-1] > swing_highs[-2]
+    hl = swing_lows[-1] > swing_lows[-2]
+    if hh and hl:
+        return 1.0
+    if not hh and not hl:
+        return -1.0
+    return 0.0
+
+
+def _equal_highs_lows_live(highs: np.ndarray, lows: np.ndarray, window: int = 20, tolerance: float = 0.0015) -> float:
+    """Liczba par prawie-rownych high/low w oknie (SMC 'liquidity pools')."""
+    if len(highs) < window:
+        return 0.0
+    h, l = highs[-window:], lows[-window:]
+    cnt = 0
+    for i in range(len(h)):
+        for j in range(i + 1, len(h)):
+            if abs(h[i] - h[j]) / max(h[i], 1e-8) <= tolerance:
+                cnt += 1
+            if abs(l[i] - l[j]) / max(l[i], 1e-8) <= tolerance:
+                cnt += 1
+    return float(cnt)
+
+
+def _liquidity_sweep_live(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, lookback: int = 20):
+    """Ostatnia swieca zrobila nowy high/low z lookback, ale zamknela sie z powrotem
+    w poprzednim zakresie - klasyczny SMC 'liquidity grab' + reversal."""
+    if len(highs) < lookback + 2:
+        return 0.0, 0.0
+    prior_high = float(highs[-lookback - 1:-1].max())
+    prior_low = float(lows[-lookback - 1:-1].min())
+    swept_high = 1.0 if (highs[-1] > prior_high and closes[-1] < prior_high) else 0.0
+    swept_low = 1.0 if (lows[-1] < prior_low and closes[-1] > prior_low) else 0.0
+    return swept_high, swept_low
+
+
+def _fvg_live(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray):
+    """Fair Value Gap na ostatnich 3 swiecach (ICT/SMC): luka miedzy high[t-2] a low[t]
+    (bull) lub low[t-2] a high[t] (bear), jeszcze niewypelniona."""
+    if len(highs) < 3 or closes[-1] <= 0:
+        return 0.0, 0.0
+    h0, l0 = float(highs[-3]), float(lows[-3])
+    h2, l2 = float(highs[-1]), float(lows[-1])
+    cur = float(closes[-1])
+    if l2 > h0:
+        return float((l2 - h0) / cur * 100), 1.0
+    if h2 < l0:
+        return float((l0 - h2) / cur * 100), -1.0
+    return 0.0, 0.0
+
+
+def _bos_choch_live(highs: np.ndarray, lows: np.ndarray, lookback: int = 10) -> float:
+    """Break of Structure: 1.0 = przebicie ostatniego swing high, -1.0 = swing low, 0 = brak."""
+    if len(highs) < lookback * 2 + 2:
+        return 0.0
+    cur_h = float(highs[-lookback:].max())
+    cur_l = float(lows[-lookback:].min())
+    prior_h = float(highs[-(lookback * 2):-lookback].max())
+    prior_l = float(lows[-(lookback * 2):-lookback].min())
+    if cur_h > prior_h:
+        return 1.0
+    if cur_l < prior_l:
+        return -1.0
+    return 0.0
+
+
+def _ichimoku_live(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray):
+    """Cloud thickness (%ceny) + TK cross. Okresy standardowe 9/26/52, liczone
+    WYLACZNIE z okien do biezacej swiecy (bez przesuniecia Senkou w przyszlosc -
+    tu liczymy wartosc biezaca chmury, nie jej klasyczna wizualizacje +26 do przodu)."""
+    if len(highs) < 52 or closes[-1] <= 0:
+        return 0.0, 0.0
+    tenkan = float((highs[-9:].max() + lows[-9:].min()) / 2)
+    kijun = float((highs[-26:].max() + lows[-26:].min()) / 2)
+    senkou_a = (tenkan + kijun) / 2
+    senkou_b = float((highs[-52:].max() + lows[-52:].min()) / 2)
+    cur = float(closes[-1])
+    thickness = abs(senkou_a - senkou_b) / cur * 100
+    tk_cross = 1.0 if tenkan > kijun else (-1.0 if tenkan < kijun else 0.0)
+    return float(thickness), float(tk_cross)
+
+
+def _volume_delta_imbalance_live(closes: np.ndarray, volumes: np.ndarray, window: int = 20) -> float:
+    """CVD proxy: (wolumen swiec wzrostowych - spadkowych) / wolumen total w oknie."""
+    if len(closes) < window + 1 or len(volumes) < window:
+        return 0.0
+    rets = np.diff(closes[-(window + 1):])
+    v = volumes[-window:]
+    buy = float(v[rets > 0].sum())
+    sell = float(v[rets < 0].sum())
+    total = float(v.sum())
+    if total < 1e-8:
+        return 0.0
+    return float((buy - sell) / total)
+
+
+def _orderblock_strength_live(closes: np.ndarray, lookback: int = 20) -> float:
+    """Sila najsilniejszego impulsu w oknie, skalowana odwrotnie do wieku (proxy
+    'order block' - swieca inicjujaca impuls jest tym silniejszym sygnalem, im
+    swiezszy)."""
+    if len(closes) < lookback + 2:
+        return 0.0
+    rets = np.diff(closes[-(lookback + 1):]) / closes[-(lookback + 1):-1]
+    idx = int(np.argmax(np.abs(rets)))
+    age = lookback - idx
+    return float(abs(float(rets[idx])) * 100 / max(age, 1))
+
+
 # ── Derywaty LIVE z magazynu (fix 2026-07-20) ────────────────────────────────
 # build_features_live przyjmowala oi_change_24h/oi_zscore_30d/ls_ratio jako
 # PARAMETRY z domyslnym 0 - a engine._compute_features ich NIE liczyl (podawal
@@ -278,7 +459,7 @@ def latest_deriv_live(symbol: str) -> Dict[str, float]:
     now = _t.time()
     if stem in _DERIV_LIVE_CACHE and (now - _DERIV_LIVE_TS.get(stem, 0)) < 3600:
         return _DERIV_LIVE_CACHE[stem]
-    wh = _P("/root/ProjektHAI/data_warehouse/derivatives")
+    wh = _P(os.environ.get("HAI_WH", "/root/ProjektHAI/data_warehouse")) / "derivatives"
     out = {"funding_rate": 0.0, "funding_change_24h": 0.0, "oi_total_log": 0.0,
            "oi_change_24h": 0.0, "oi_zscore_30d": 0.0, "taker_buy_ratio": 0.5,
            "ls_ratio": 1.0, "ls_ratio_chg_24h": 0.0}
@@ -540,7 +721,131 @@ def build_features_live(
 
         macro_ext = _get_macro_extended_live()
 
+        # === EKSPERYMENTALNE CECHY (2026-08-05, inwentaryzacja §5.4) ===
+        # X_* są liczone i zwracane w rekordzie, ale NIE wchodzą do FEATURE_NAMES /
+        # MODEL_FEATURES — żaden model ich nie używa. Cel: mają być na stanie,
+        # gotowe do podpięcia, ale zero wpływu na istniejące modele/backtest/live.
+        x_feats: Dict[str, float] = {}
+        try:
+            c = np.asarray(prices_1h, dtype=np.float64)
+            # realized volatility (1h returns) 6h/24h + Parkinson (high-low)
+            if len(c) > 25:
+                rets = np.diff(c) / c[:-1]
+                x_feats["x_real_vol_6h"] = round(float(rets[-6:].std() * 100), 4) if len(rets) >= 6 else 0.0
+                x_feats["x_real_vol_24h"] = round(float(rets[-24:].std() * 100), 4) if len(rets) >= 24 else 0.0
+                if highs_1h is not None and lows_1h is not None and len(highs_1h) > 25 and len(lows_1h) > 25:
+                    _hh = np.asarray(highs_1h, dtype=np.float64)[-25:]
+                    _ll = np.asarray(lows_1h, dtype=np.float64)[-25:]
+                    hl = np.log(_hh / _ll)
+                    park = np.sqrt((1.0 / (4 * np.log(2))) * (hl**2).mean()) * 100
+                    x_feats["x_parkinson_24h"] = round(float(park), 4)
+            # RSI wielookresowo (7/21) z tego samego Wildera co rsi
+            if len(c) > 25:
+                _r7 = _rsi_series_wilder(c, 7)
+                _r21 = _rsi_series_wilder(c, 21)
+                x_feats["x_rsi_7"] = round(float(_r7[-1]), 2)
+                x_feats["x_rsi_21"] = round(float(_r21[-1]), 2)
+            # ROC wielookresowo (4/24/168)
+            if len(c) > 170:
+                for _bars in (4, 24, 168):
+                    x_feats[f"x_roc_{_bars}"] = round(float((c[-1] / c[-1 - _bars] - 1) * 100), 4) if c[-1 - _bars] else 0.0
+            # EMA ratio pary (9/21, 21/55, 50/200) — cross/herbst
+            if len(c) > 200:
+                for _f, _s in ((9, 21), (21, 55), (50, 200)):
+                    _ef = _ema_series_live(c, _f)[-1]
+                    _es = _ema_series_live(c, _s)[-1]
+                    x_feats[f"x_ema{_f}_over_{_s}"] = round(float(_ef / _es - 1), 6) if _es else 0.0
+            # OBV slope: znormalizowany gradient OBV (stosunek netto buy-pressure
+            # do calkowitego wolumenu w oknie) — NIE dzielenie przez obv[0] (zawsze 0).
+            if volumes_1h and len(volumes_1h) > 25 and len(c) > 25:
+                _v = np.asarray(volumes_1h[-25:], dtype=np.float64)
+                _cc = c[-26:]
+                _dv = np.sign(np.diff(_cc))
+                obv = np.zeros(25); obv[0] = 0.0
+                for _i in range(1, 25):
+                    obv[_i] = obv[_i - 1] + (_dv[_i - 1] * _v[_i - 1] if _dv[_i - 1] != 0 else 0.0)
+                _vsum = float(_v.sum())
+                x_feats["x_obv_slope_24h"] = round(float(obv[-1]) / (_vsum + 1e-8), 6)
+            # weekend flag (sob/niedz UTC)
+            x_feats["x_weekend"] = 1.0 if now.weekday() in (5, 6) else 0.0
+            # BTC lead-lag proxy: odchylenie zachowania symbolu od dominacji BTC.
+            # Gdy BTC dominacja rosnie, a symbol nie nadaza (stoi/neutralnie) -> okazja
+            # catch-up (hipoteza §6.2). NIE duplikat btc_dominance_chg: tu porownujemy
+            # temp BTC-dom vs momentum symbolu.
+            _btc_chg = float(macro_ext.get("btc_dominance_chg", 0.0))
+            x_feats["x_btc_leadlag"] = round(_btc_chg - float(momentum), 4)
+        except Exception as _xe:
+            logger.debug(f"experimental features error: {_xe}")
+
+        # === CECHY RPTR: RF/ET specjalistyczne (2026-08-05) ===
+        # Jak x_feats: liczone i zwracane, ale NIE w FEATURE_NAMES/MODEL_FEATURES -
+        # zero wplywu, dopoki config nie doda ich jawnie przez feature_mix.
+        rptr_feats: Dict[str, float] = {}
+        try:
+            _c = np.asarray(prices_1h, dtype=np.float64)
+            _has_hl = (highs_1h is not None and lows_1h is not None
+                       and len(highs_1h) == len(prices_1h) and len(lows_1h) == len(prices_1h))
+            _h = np.asarray(highs_1h, dtype=np.float64) if _has_hl else None
+            _l = np.asarray(lows_1h, dtype=np.float64) if _has_hl else None
+            _v = np.asarray(volumes_1h, dtype=np.float64) if volumes_1h else None
+
+            # --- RF specialist ---
+            if len(_c) > 20:
+                _rsi_ser = _rsi_series_wilder(_c, 14)
+                rptr_feats["r_stoch_rsi"] = round(_stoch_rsi_live(_rsi_ser, 14), 3)
+            if _has_hl and len(_c) > 20:
+                rptr_feats["r_cci_20"] = round(_cci_live(_h, _l, _c, 20), 3)
+                rptr_feats["r_di_spread"] = round(_di_spread_live(_h, _l, _c, 14), 3)
+                rptr_feats["r_range_compression"] = round(_range_compression_live(_h, _l, 6, 24), 4)
+                rptr_feats["r_structure_bias"] = _structure_bias_live(_h, _l, 5)
+            if len(_c) > 40:
+                _e12 = _ema_series_live(_c[-200:], 12)
+                _e26 = _ema_series_live(_c[-200:], 26)
+                _macd_line = _e12 - _e26
+                _signal = _ema_series_live(_macd_line, 9)
+                rptr_feats["r_macd_signal_dist"] = round(float(_macd_line[-1] - _signal[-1]) / float(_c[-1]) * 100, 4) if _c[-1] else 0.0
+            if len(_c) > 21:
+                rptr_feats["r_momentum_20"] = round(float((_c[-1] / _c[-21] - 1) * 100), 4)
+            if len(_c) > 20:
+                _atr_ser = _atr_series_wilder(_h, _l, _c, 14) if _has_hl else None
+                if _atr_ser is not None and len(_atr_ser) > 20:
+                    _aw = _atr_ser[-20:]
+                    _astd = float(_aw.std())
+                    rptr_feats["r_atr_zscore_20"] = round(float((_atr_ser[-1] - _aw.mean()) / _astd), 4) if _astd > 1e-8 else 0.0
+            if volumes_1h and len(volumes_1h) > 50:
+                _v50 = np.asarray(volumes_1h[-50:], dtype=np.float64)
+                _v50std = float(_v50.std())
+                rptr_feats["r_volume_zscore_50"] = round(float((_v50[-1] - _v50.mean()) / _v50std), 4) if _v50std > 1e-8 else 0.0
+            rptr_feats["r_vwap_distance"] = vwap_dev  # alias vwap_dev (juz liczone wyzej)
+            rptr_feats["r_htf_trend_4h"] = trend_4h   # alias (juz liczone wyzej)
+
+            # --- ET specialist (SMC + Ichimoku + interakcje) ---
+            if _has_hl and len(_c) > 25:
+                _sh, _sl = _liquidity_sweep_live(_h, _l, _c, 20)
+                rptr_feats["e_liquidity_sweep_high"] = _sh
+                rptr_feats["e_liquidity_sweep_low"] = _sl
+                _fvg_size, _fvg_dir = _fvg_live(_h, _l, _c)
+                rptr_feats["e_fvg_size"] = round(_fvg_size, 4)
+                rptr_feats["e_fvg_direction"] = _fvg_dir
+                rptr_feats["e_bos_choch"] = _bos_choch_live(_h, _l, 10)
+                rptr_feats["e_equal_highs_lows_count"] = _equal_highs_lows_live(_h, _l, 20, 0.0015)
+            if _has_hl and len(_c) > 52:
+                _thick, _tk = _ichimoku_live(_h, _l, _c)
+                rptr_feats["e_ichimoku_cloud_thickness"] = round(_thick, 4)
+                rptr_feats["e_tk_cross"] = _tk
+            if _v is not None and len(_c) > 25:
+                rptr_feats["e_volume_delta_imbalance"] = round(_volume_delta_imbalance_live(_c, _v, 20), 4)
+            if len(_c) > 25:
+                rptr_feats["e_orderblock_strength"] = round(_orderblock_strength_live(_c, 20), 4)
+            rptr_feats["e_phantomflow_score"] = sr_node_strength  # alias (juz liczone wyzej, PhantomFlow S/R)
+            rptr_feats["e_rsi_x_funding"] = round(float(rsi) * float(funding_rate), 4)
+            rptr_feats["e_atr_pct_x_vol_zscore"] = round(float(atr_pct) * float(volume_zscore), 4)
+        except Exception as _re:
+            logger.debug(f"rptr features error: {_re}")
+
         return {
+            **x_feats,
+            **rptr_feats,
             "rsi": round(rsi, 2),
             "rsi_4h": round(rsi_4h, 2),
             "rsi_1d": round(rsi_1d, 2),
