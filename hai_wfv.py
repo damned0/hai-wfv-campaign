@@ -171,6 +171,15 @@ def parse_model(name: str):
         return core, 24, "sdabl"     # ablacja: core-only (bez sd/bars)
     elif rest == "plac":
         return core, 24, "plac"      # placebo: 6 losowych cech
+    elif rest.startswith("sniper") or rest.startswith("trend") or rest.startswith("rev"):
+        # WARIANTY kanoniczne 2026-08-04: <algo>_<sniper|trend|rev>_<H>[.<variant>]
+        # np. et_sniper_v1, xgb_sniper_deploy, lgb_sniper_honest -> profil + 6h.
+        _prof = "sniper" if rest.startswith("sniper") else ("trend" if rest.startswith("trend") else "rev")
+        return core, 6, _prof
+    elif rest.startswith("fit2"):
+        # FIT2-div (B2 gen.Dir-v1): profil 'fit2', nieodtwarzalny (brak cech w trenerze),
+        # ale nazwa spójna kanonicznie. Default 48h (label_long).
+        return core, 48, "fit2"
     elif rest:
         return None  # np. et_h72_COREv2_iter2 — wariant nieodtwarzalny
 
@@ -182,6 +191,18 @@ def load_config(name: str):
     if not p.exists():
         return None
     return json.loads(p.read_text()).get("models", [])
+
+
+def config_feature_mix(name: str) -> dict:
+    """Zwraca feature_mix z configu (GRANDKAMPANIA §3.2 / THC §9): per-model modyfikacje cech.
+    np. {"cat_sniper_6h": {"add": ["oi_change_24h"], "remove": ["bb_bandwidth_pct"]}}."""
+    p = CONFIGS_DIR / f"{name}.json"
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text()).get("feature_mix") or {}
+    except Exception:
+        return {}
 
 
 def _apply_symbol_whitelist(df):
@@ -301,9 +322,11 @@ def label_col(horizon: int) -> str:
     return std.get(horizon) or f"label_h{horizon}"   # extra_horizons -> label_h{H}
 
 
-def train_window(df_train, models, mt):
+def train_window(df_train, models, mt, mix=None):
     """Trenuje modele configu WYŁĄCZNIE na df_train (dane sprzed cutoffu).
-    Zwraca dict w formacie, który ensemble przyjmuje bez konwersji."""
+    mix: {model_name: {"add": [...], "remove": [...]}} — feature-mix per model
+    (GRANDKAMPANIA §3.2, THC §9): nakłada modyfikacje na domyślne cechy profilu."""
+    mix = mix or {}
     trained = {}
     for name in models:
         spec = parse_model(name)
@@ -397,6 +420,28 @@ def train_window(df_train, models, mt):
             lbl = label_col(horizon)
             feats = mt.PREC_FEATURES if (profile in ("prec", "precB")
                                           and hasattr(mt, "PREC_FEATURES")) else None
+
+        # FEATURE-MIX (GRANDKAMPANIA §3.2 / THC §9): nakłada modyfikacje z configu
+        # na domyślne cechy profilu. np. {"add":["oi_change_24h"], "remove":["bb_bandwidth_pct"]}
+        _mix = mix.get(name)
+        if _mix:
+            _fl = list(feats) if feats else []
+            for _add in _mix.get("add", []):
+                if _add not in _fl:
+                    _fl.append(_add)
+            _rm = set(_mix.get("remove", []))
+            _fl = [f for f in _fl if f not in _rm]
+            # Bezpieczny filtr (2026-08-04, ta sama zasada co PROFILE_FEATURES
+            # nizej) - "add" moze wskazywac kolumny ktorych nie ma w tym
+            # datasecie (np. cvd_x_adx/of_cvd_chg_24h) - filtrujemy zamiast
+            # crashowac na selekcji kolumn.
+            _fl_ok = [f for f in _fl if f in df_use.columns]
+            _fl_missing = [f for f in _fl if f not in df_use.columns]
+            if _fl_missing:
+                log.warning(f"    {name}: feature-mix add ma brakujace kolumny "
+                            f"{_fl_missing} — pominieto")
+            feats = _fl_ok
+            log.info(f"    {name}: feature-mix -> {len(feats)} cech: {feats}")
 
         if lbl not in df_use.columns:
             log.warning(f"    {name}: brak kolumny {lbl} w dataset — POMIJAM")
@@ -644,7 +689,10 @@ def main():
         bad = [m for m, s in specs if s is None]
         if bad:
             log.warning(f"{n}: nieodtwarzalne modele {bad} — config będzie NIEPEŁNY")
-        plan[n] = models
+        _mix = config_feature_mix(n)
+        plan[n] = (models, _mix)
+        if _mix:
+            log.info(f"{n}: feature_mix aktywny ({len(_mix)} modeli z modyfikacjami)")
         for _, sp in specs:
             if not sp:
                 continue
@@ -658,7 +706,7 @@ def main():
     df = build_dataset(horizons)
     df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
     need_regime = any(parse_model(m) and str(parse_model(m)[2]).startswith("regime")
-                      for ms in plan.values() for m in ms)
+                      for ms, _mx in plan.values() for m in ms)
     if need_regime:
         df = add_regime_column(df)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -693,19 +741,37 @@ def main():
             log.warning(f"W{w+1}: za malo danych treningowych ({len(df_train)}) — pomijam okno")
             continue
 
-        needed = sorted({m for models in plan.values() for m in models if parse_model(m)})
+        needed = sorted({m for models, _mx in plan.values() for m in models if parse_model(m)})
+        # Konfigi z feature_mix: modele w nich trenowane OSOBNO (zmienione cechy),
+        # wiec dodajemy je pod kluczem (cfg, model) — nie koliduja z czystym bankiem.
+        mix_models = {}
+        for _cfg, (_models, _mx) in plan.items():
+            if not _mx:
+                continue
+            for _m in _models:
+                if _m in _mx:
+                    mix_models.setdefault(_cfg, []).append(_m)
         log.info(f"\n=== OKNO W{w+1}/{args.windows} | trening < {cutoff:%Y-%m-%d} "
                  f"({len(df_train):,} probek) | test {win_start:%Y-%m-%d}..{(now-timedelta(days=off_end)):%Y-%m-%d} "
-                 f"| {len(needed)} unikalnych modeli ===")
+                 f"| {len(needed)} unikalnych modeli + {len(mix_models)} mixowanych ===")
         t_tr = time.time()
         bank = train_window(df_train, needed, mt)
-        log.info(f"    wytrenowano {len(bank)}/{len(needed)} modeli w {time.time()-t_tr:.0f}s")
-        if not bank:
+        mix_bank = {}
+        for _cfg, _mmodels in mix_models.items():
+            _mmix = {m: plan[_cfg][1][m] for m in _mmodels}
+            mix_bank.update(train_window(df_train, _mmodels, mt, mix=_mmix))
+        log.info(f"    wytrenowano {len(bank)} czystych + {len(mix_bank)} mixowanych w {time.time()-t_tr:.0f}s")
+        if not bank and not mix_bank:
             continue
         per_window_cutoffs.append(cutoff.strftime("%Y-%m-%d"))
 
-        for ci, (cfg_name, models) in enumerate(plan.items(), 1):
-            avail = {m: bank[m] for m in models if m in bank}
+        for ci, (cfg_name, (_models, _mx)) in enumerate(plan.items(), 1):
+            # Czyste modele z banku; modele mixowane z mix_bank (klucz = nazwa modelu)
+            avail = {m: bank[m] for m in _models if m in bank}
+            if _mx:
+                for _m in _models:
+                    if _m in _mx and _m in mix_bank:
+                        avail[_m] = mix_bank[_m]
             if not avail:
                 continue
             inject(ensemble, avail)
@@ -759,7 +825,7 @@ def main():
         if not windows:
             log.warning(f"{cfg_name}: zero okien — brak wyniku")
             continue
-        models = plan[cfg_name]
+        models = plan[cfg_name][0]  # (models, mix) — wez czysta liste
         # Holdout firewall: split na dev (starsze okna) i holdout (N najnowszych).
         # W{n}: w=0=najstarsze okno -> holdout = najwyzsze numery okien.
         def _wnum(s):
@@ -807,7 +873,7 @@ def main():
     return
 
     # (stara sciezka per-config — nieuzywana)
-    for ci, (cfg_name, models) in enumerate(plan.items(), 1):
+    for ci, (cfg_name, (_models, _mx)) in enumerate(plan.items(), 1):
         t_cfg = time.time()
         windows, cutoffs = [], []
         for w in range(args.windows):
@@ -824,7 +890,7 @@ def main():
 
             log.info(f"  W{w+1}/{args.windows}: trening < {cutoff:%Y-%m-%d} "
                      f"({len(df_train):,} próbek) → test {win_start:%Y-%m-%d}..{(now-timedelta(days=off_end)):%Y-%m-%d}")
-            trained = train_window(df_train, models, mt)
+            trained = train_window(df_train, _models, mt, mix=_mx or None)
             if not trained:
                 log.warning(f"  W{w+1}: zero modeli — okno pominięte")
                 continue
