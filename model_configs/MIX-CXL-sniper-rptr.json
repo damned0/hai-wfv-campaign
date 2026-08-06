@@ -1,0 +1,12 @@
+{
+  "name": "MIX-CXL-sniper-rptr",
+  "description": "2026-08-06: bezposredni odpowiednik MIX-CXL-sniper (cat+xgb+lgb, ten sam trio), ale kazdy model dostaje WLASNY rptr feature_mix (jak w CAT/XGB/LGB-sniper-rptr osobno) zamiast identycznego rdzenia 11. Cel: zmierzyc czy rozniciowanie cech per model realnie obniza korelacje predykcji (baseline: MACIERZ_KORELACJI.md, MIX-CXL-sniper stare 0.993-0.995).",
+  "created": "2026-08-06",
+  "models": ["cat_sniper_6h", "xgb_sniper_6h", "lgb_sniper_6h"],
+  "feature_mix": {
+    "cat_sniper_6h": {"add": ["r_structure_bias", "e_bos_choch", "e_fvg_direction", "e_tk_cross"], "remove": []},
+    "xgb_sniper_6h": {"add": ["e_rsi_x_funding", "e_atr_pct_x_vol_zscore", "r_momentum_20", "r_range_compression"], "remove": []},
+    "lgb_sniper_6h": {"add": ["r_di_spread", "r_structure_bias", "r_vwap_distance", "r_htf_trend_4h"], "remove": []}
+  },
+  "expected_weights": "auto (precision-basis)"
+}
