@@ -1709,17 +1709,45 @@ class Backtester:
         # ktorego porownania (>=, <) daja numpy.bool_ - NIE Python bool - co
         # wywala json.dumps() ("Object of type bool is not JSON serializable")
         # przy pierwszym W6/6 ktore faktycznie doszlo do konca bez restartu.
-        avg_pf  = float(round(sum(pfs) / len(pfs), 3))
-        avg_wr  = float(round(sum(wrs) / len(wrs), 1))
+        avg_pf  = float(round(sum(pfs) / len(pfs), 3))   # macro-srednia, TYLKO do raportu
         max_dd  = float(round(max(dds), 1))
         min_pf  = float(round(min(pfs), 3))
         weak_w  = int(sum(1 for p in pfs if p < 1.20))
         avg_tr  = float(round(sum(trades) / len(trades), 0))
 
-        if avg_pf >= 1.45 and max_dd < 18.0 and weak_w == 0:
+        # === POOLED (2026-08-06) — to decyduje o GO/NO_GO ===========================
+        # Bylo: decyzja na `avg_pf` = SREDNIA z PF poszczegolnych okien. To srednia
+        # ILORAZOW, ktora systematycznie ZAWYZA (nierownosc Jensena): pojedyncze okno
+        # z malymi stratami daje PF=20+ i samo podbija cala srednia. Zmierzone na
+        # CAT-sniper-rptr@0.75: okna [1.83, 6.33, 6.20, 1.68, 2.33, 1.83, 2.02,
+        # 19.96, 2.70, 2.49, 1.89] -> srednia 4.478 vs POOLED 2.660 (+68% zawyzenia).
+        # Teraz decyzja idzie z POOLED = iloraz SUM (wszystkie trady traktowane rowno,
+        # okno z 3 tradami nie wazy tyle co okno z 300). To samo dla WR.
+        _gw = sum(float(w.get("gross_win") or 0.0) for w in windows if w["total_trades"] > 0)
+        _gl = sum(float(w.get("gross_loss") or 0.0) for w in windows if w["total_trades"] > 0)
+        _has_gross = (_gw > 0 or _gl > 0)
+        if _has_gross:
+            pooled_pf = float(round(_gw / _gl, 3)) if _gl > 0 else 0.0
+        else:
+            # Fallback dla starych okien bez gross_win/gross_loss (dane sprzed
+            # 2026-08-06): wazenie PF liczba tradow - blizej pooled niz zwykla
+            # srednia, ale NIE identyczne. Oznaczone ponizej flaga pf_basis.
+            _tw = sum(w["total_trades"] for w in windows if w["total_trades"] > 0) or 1
+            pooled_pf = float(round(
+                sum(w["profit_factor"] * w["total_trades"]
+                    for w in windows if w["total_trades"] > 0) / _tw, 3))
+
+        _wins = sum(int(w.get("wins") or 0) for w in windows if w["total_trades"] > 0)
+        _tr_ok = sum(w["total_trades"] for w in windows if w["total_trades"] > 0)
+        pooled_wr = float(round(_wins / _tr_ok * 100, 1)) if _tr_ok else 0.0
+        # avg_wr zwracane dalej pod ta sama nazwa (kompatybilnosc bazy/dashboardu),
+        # ale liczone jako POOLED - bo tez bylo macro-srednia i tez zawyzalo.
+        avg_wr = pooled_wr if _tr_ok else float(round(sum(wrs) / len(wrs), 1))
+
+        if pooled_pf >= 1.45 and max_dd < 18.0 and weak_w == 0:
             decision = "GO"
             color    = "green"
-        elif avg_pf >= 1.35 and max_dd < 22.0 and weak_w <= 1:
+        elif pooled_pf >= 1.35 and max_dd < 22.0 and weak_w <= 1:
             decision = "WARNING"
             color    = "yellow"
         else:
@@ -1729,14 +1757,16 @@ class Backtester:
         return {
             "decision":     decision,
             "color":        color,
-            "avg_pf":       avg_pf,
+            "avg_pf":       pooled_pf,        # <- POOLED (to co decyduje); nazwa dla zgodnosci
+            "avg_pf_macro": avg_pf,           # <- stara srednia-z-okien, tylko informacyjnie
+            "pf_basis":     "pooled" if _has_gross else "trade_weighted_fallback",
             "min_pf":       min_pf,
-            "avg_wr":       avg_wr,
+            "avg_wr":       avg_wr,           # <- POOLED
             "max_dd":       max_dd,
             "weak_windows": weak_w,
             "avg_trades":   avg_tr,
             "criteria": {
-                "pf_ok":  avg_pf >= 1.45,
+                "pf_ok":  pooled_pf >= 1.45,
                 "dd_ok":  max_dd < 18.0,
                 "weak_ok": weak_w == 0,
             },
@@ -1845,6 +1875,7 @@ class Backtester:
             return {
                 "total_trades": 0, "wins": 0, "losses": 0,
                 "win_rate": 0, "total_pnl_usdt": 0, "profit_factor": 0,
+                "gross_win": 0.0, "gross_loss": 0.0,   # 2026-08-06: do POOLED PF w _wfv_verdict
                 "max_drawdown_pct": 0, "avg_hold_hours": 0,
                 "longs": 0, "shorts": 0, "circuit_breaker_days": 0,
                 "doctrine": {}, "pyramiding": {}, "top_symbols": [], "trade_log": [],
@@ -2007,6 +2038,12 @@ class Backtester:
             "win_rate":             round(wr, 1),
             "total_pnl_usdt":       round(pnl, 2),
             "profit_factor":        pf,
+            # 2026-08-06: surowe sumy zysk/strata per okno - potrzebne zeby
+            # _wfv_verdict mogl policzyc POOLED PF (iloraz sum), zamiast
+            # sredniej z ilorazow ktora systematycznie ZAWYZA (nierownosc
+            # Jensena: jedno okno z PF=19.96 podbijalo srednia o +68%).
+            "gross_win":            round(pf_win, 4),
+            "gross_loss":           round(pf_los, 4),
             "max_drawdown_pct":     round(max_dd, 1),
             "avg_hold_hours":       avg_h,
             "longs":                len(longs),
