@@ -46,7 +46,7 @@ import numpy as np
 # Wyniki → baza HAI-NL (hairesearch.db, wfv_runs) z harness='honest_v1' i
 # lookahead_safe=1. Stare 679 wpisów (harness bez retreningu) skasowane 13.07.
 # Sciezki parametryzowane env — ten sam kod dziala na VPS i na RunPodzie.
-#   VPS:  HAI_ROOT=/root/ProjektHAI           HAI_INSTANCE_DIR=<root>/HAIs/HAI_EPV
+#   VPS:  HAI_ROOT=/root/ProjektHAI           HAI_INSTANCE_DIR=<root>/HAI-NT/EPV
 #   pod:  HAI_ROOT=/workspace/ProjektHAIoRP   HAI_INSTANCE_DIR=<root>/WFV1
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -437,9 +437,26 @@ def train_window(df_train, models, mt, mix=None):
             # crashowac na selekcji kolumn.
             _fl_ok = [f for f in _fl if f in df_use.columns]
             _fl_missing = [f for f in _fl if f not in df_use.columns]
+            # FIX 2026-08-07: bylo "warning + jedziemy dalej". Kampania RPGC v8
+            # przez 20h liczyla NIE TO, CO TRZEBA: pod_build_cache.py pisal cache
+            # do wfv_dataset_rptr.parquet, a build_dataset czytal wfv_dataset.parquet
+            # (HAI_WFV_CACHE nikt nie ustawial), wiec dataset NIE MIAL kolumn
+            # r_*/e_*/x_*/funding_*. Filtr grzecznie je wyrzucil, modele pojechaly
+            # na 7-17 starych cechach, ET zostal z garstka i dal ZERO transakcji.
+            # Wszystko wygladalo zdrowo do samego konca.
+            # feature_mix to JAWNA deklaracja intencji - brak kolumny to blad
+            # konfiguracji/danych, nie stan do zignorowania. Ginemy glosno.
             if _fl_missing:
-                log.warning(f"    {name}: feature-mix add ma brakujace kolumny "
-                            f"{_fl_missing} — pominieto")
+                log.error(f"    {name}: feature-mix zadeklarowal {len(_fl)} cech, "
+                          f"dataset ma {len(_fl_ok)}. BRAKUJE: {_fl_missing}")
+                if os.environ.get("HAI_ALLOW_PARTIAL_MIX") != "1":
+                    raise SystemExit(
+                        f"PRZERWANO ({name}): dataset nie ma kolumn {_fl_missing}. "
+                        f"Przebuduj cache (scripts/pod_build_cache.py) albo — jesli "
+                        f"naprawde chcesz liczyc na okrojonym zestawie — ustaw "
+                        f"HAI_ALLOW_PARTIAL_MIX=1.")
+                log.warning(f"    {name}: HAI_ALLOW_PARTIAL_MIX=1 — jade na "
+                            f"{len(_fl_ok)}/{len(_fl)} cechach ŚWIADOMIE")
             feats = _fl_ok
             log.info(f"    {name}: feature-mix -> {len(feats)} cech: {feats}")
 
@@ -741,7 +758,14 @@ def main():
             log.warning(f"W{w+1}: za malo danych treningowych ({len(df_train)}) — pomijam okno")
             continue
 
-        needed = sorted({m for models, _mx in plan.values() for m in models if parse_model(m)})
+        # FIX 2026-08-07: bylo bez warunku `not (_mx and m in _mx)` — model uzyty
+        # w configu z feature_mix byl trenowany DWA RAZY: raz "czysto" do banku
+        # (nikt tego nie uzywal, bo config siega po wersje mixowana) i raz z mixem.
+        # Przy kampanii gdzie WSZYSTKIE configi maja feature_mix to dokladnie
+        # 2x koszt treningu. Bierzemy do czystego banku tylko te modele, ktore
+        # jakis config faktycznie chce bez mixu.
+        needed = sorted({m for models, _mx in plan.values() for m in models
+                         if parse_model(m) and not (_mx and m in _mx)})
         # Konfigi z feature_mix: modele w nich trenowane OSOBNO (zmienione cechy),
         # wiec dodajemy je pod kluczem (cfg, model) — nie koliduja z czystym bankiem.
         mix_models = {}
@@ -759,19 +783,26 @@ def main():
         mix_bank = {}
         for _cfg, _mmodels in mix_models.items():
             _mmix = {m: plan[_cfg][1][m] for m in _mmodels}
-            mix_bank.update(train_window(df_train, _mmodels, mt, mix=_mmix))
+            # FIX 2026-08-07: bylo mix_bank.update(...) — klucz = SAMA nazwa
+            # modelu, wbrew komentarzowi wyzej ("pod kluczem (cfg, model)").
+            # Dopoki kazdy config mial inny model (cat_/rf_/lgb_) nic sie nie
+            # dzialo, ale przy dwoch configach mixujacych TEN SAM model drugi
+            # po cichu nadpisywal pierwszy i oba liczyly sie na cechach tego
+            # drugiego. Blokowalo to laczenie configow w jeden proces.
+            for _m, _d in train_window(df_train, _mmodels, mt, mix=_mmix).items():
+                mix_bank[(_cfg, _m)] = _d
         log.info(f"    wytrenowano {len(bank)} czystych + {len(mix_bank)} mixowanych w {time.time()-t_tr:.0f}s")
         if not bank and not mix_bank:
             continue
         per_window_cutoffs.append(cutoff.strftime("%Y-%m-%d"))
 
         for ci, (cfg_name, (_models, _mx)) in enumerate(plan.items(), 1):
-            # Czyste modele z banku; modele mixowane z mix_bank (klucz = nazwa modelu)
+            # Czyste modele z banku; mixowane z mix_bank pod kluczem (config, model)
             avail = {m: bank[m] for m in _models if m in bank}
             if _mx:
                 for _m in _models:
-                    if _m in _mx and _m in mix_bank:
-                        avail[_m] = mix_bank[_m]
+                    if _m in _mx and (cfg_name, _m) in mix_bank:
+                        avail[_m] = mix_bank[(cfg_name, _m)]
             if not avail:
                 continue
             inject(ensemble, avail)

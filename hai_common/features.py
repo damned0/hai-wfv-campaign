@@ -544,6 +544,14 @@ def build_features_live(
     taker_buy_ratio: float = 0.5,
     ls_ratio: float = 1.0,
     ls_ratio_chg_24h: float = 0.0,
+    # === PARYTET LIVE dla cech RF (2026-08-07) ===
+    # RF-sniper-v7 uzywa dist_above_liq/dist_below_liq/cvd_x_adx. Wszystkie trzy
+    # liczyly sie w treningu (ml_trainer) i backtescie (backtester), ale NIE
+    # tutaj — model dawal WR 70.8% w WFV i byl NIEWDRAZALNY. Zlapane przez
+    # scripts/mapa_cech.py.
+    symbol: Optional[str] = None,        # potrzebny do mapy likwidacji (OI/ls z magazynu)
+    timestamps_1h: Optional[List] = None,  # siatka 1h do wyrownania OI/ls
+    of_cvd_chg_24h: float = 0.0,         # zmiana CVD 24h; brak orderflow -> 0.0 (jak trening)
 ) -> Optional[Dict[str, float]]:
     if not prices_1h or len(prices_1h) < MIN_PRICES_1H:
         return None
@@ -721,6 +729,41 @@ def build_features_live(
 
         macro_ext = _get_macro_extended_live()
 
+        # === MAPA LIKWIDACJI — parytet live (2026-08-07) ===
+        # NIE wlasna kopia formuly: wolamy DOKLADNIE te sama funkcje, ktorej
+        # uzywaja ml_trainer i backtester (liqmap_features naglowek: "WSPOLNE
+        # zrodlo dla treningu i backtestu (parzystosc!)") — live bylo brakujacym
+        # trzecim odbiorca. Wlasna implementacja rozjechalaby sie przy pierwszej
+        # zmianie parametrow (LEVERAGES/DECAY_H sa tam ZAMROZONE).
+        # Fallback to DIST_DEFAULT (30.0), NIGDY 0.0 — zero znaczy "klaster
+        # dokladnie na cenie", czyli semantyke ODWROTNA, i jest OOD dla scalera.
+        _liq_feats: Dict[str, float] = {}
+        try:
+            from .liqmap_features import compute_liq_dist_from_warehouse, DIST_DEFAULT
+        except Exception:
+            DIST_DEFAULT = 30.0
+            compute_liq_dist_from_warehouse = None
+        _db = _da = DIST_DEFAULT
+        if compute_liq_dist_from_warehouse and symbol and timestamps_1h is not None \
+                and highs_1h is not None and lows_1h is not None:
+            try:
+                import pandas as pd  # lokalnie: features.py nie importuje pandas globalnie
+                _n = min(len(timestamps_1h), len(prices_1h), len(highs_1h), len(lows_1h))
+                if _n >= 50:
+                    _df1h = pd.DataFrame({
+                        "timestamp": pd.to_datetime(pd.Series(list(timestamps_1h)[-_n:]),
+                                                    utc=True).dt.tz_localize(None),
+                        "close": list(prices_1h)[-_n:],
+                        "high": list(highs_1h)[-_n:],
+                        "low": list(lows_1h)[-_n:]})
+                    _b, _a = compute_liq_dist_from_warehouse(_df1h, symbol)
+                    if len(_b) and len(_a):
+                        _db = float(_b[-1]) if np.isfinite(_b[-1]) else DIST_DEFAULT
+                        _da = float(_a[-1]) if np.isfinite(_a[-1]) else DIST_DEFAULT
+            except Exception as _liq_e:
+                logger.debug(f"liq live skip ({_liq_e}) -> DIST_DEFAULT")
+        _liq_feats = {"dist_below_liq": round(_db, 4), "dist_above_liq": round(_da, 4)}
+
         # === EKSPERYMENTALNE CECHY (2026-08-05, inwentaryzacja §5.4) ===
         # X_* są liczone i zwracane w rekordzie, ale NIE wchodzą do FEATURE_NAMES /
         # MODEL_FEATURES — żaden model ich nie używa. Cel: mają być na stanie,
@@ -897,6 +940,14 @@ def build_features_live(
             "us10y_chg": macro_ext.get("us10y_yield_chg", 0.0),
             "dxy_chg": macro_ext.get("dxy_chg", 0.0),
             "btc_dominance_chg": macro_ext.get("btc_dominance_chg", 0.0),
+            # === PARYTET LIVE cech RF (2026-08-07) ===
+            # cvd_x_adx: wzor odtworzony EMPIRYCZNIE z datasetu (4.1M wierszy,
+            # blad wzgledny 0.0) = of_cvd_chg_24h * adx_14. Gdy wolajacy nie ma
+            # orderflow, of_cvd_chg_24h=0.0 -> cecha 0.0, dokladnie jak w treningu
+            # (tam 1.4M z 4.1M wierszy ma zero z tego samego powodu).
+            "of_cvd_chg_24h": float(of_cvd_chg_24h),
+            "cvd_x_adx": float(of_cvd_chg_24h) * round(adx_14, 1),
+            **_liq_feats,
         }
     except Exception as e:
         logger.error(f"build_features_live error: {e}", exc_info=False)

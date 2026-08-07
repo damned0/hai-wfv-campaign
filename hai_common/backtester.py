@@ -955,6 +955,18 @@ class Backtester:
 
         feat_src = {**{k: v for k, v in ind.items() if not k.startswith("_")},
                     **neural}
+        # Cechy do feature_snapshot (2026-08-06): union tego co modele w ensemble
+        # FAKTYCZNIE maja w feature_names + stala lista kontekstu rynkowego.
+        # Bez tego snapshot ignorowal feature_mix i zapisywal cechy spoza modelu.
+        try:
+            _used = set()
+            for _mn in getattr(_ens, "models", {}):
+                _used.update(_ens.feature_names.get(_mn) or [])
+            _SNAP_FEATS = sorted(_used | set(_TOP_FEATURES_SNAPSHOT)) if _used \
+                          else list(_TOP_FEATURES_SNAPSHOT)
+        except Exception:
+            _SNAP_FEATS = list(_TOP_FEATURES_SNAPSHOT)
+
         # Interakcja funding x OI-zscore (B3 gen.Dir-v1, 2026-07-19) - spojne
         # z ml_trainer (record dict). Oba czynniki juz w feat_src (neural).
         _fr_v = feat_src.get("funding_rate")
@@ -1465,9 +1477,17 @@ class Backtester:
                 max(model_votes, key=lambda m: model_votes[m][_side_key])
                 if model_votes else None
             )
+            # FIX 2026-08-06: bylo TYLKO `_TOP_FEATURES_SNAPSHOT` - sztywna lista 10
+            # cech, niezalezna od tego czego model NAPRAWDE uzywa. Skutek: przy
+            # configach z feature_mix (RPGC v7: 18 cech/model, w tym r_*/e_*/x_*)
+            # snapshot zapisywal cechy, ktorych model w ogole nie widzial, a jego
+            # wlasnych - nie. Analiza sygnal/szum po cechach byla przez to niemozliwa.
+            # Teraz: cechy FAKTYCZNIE uzywane przez modele w ensemble (union), plus
+            # stala lista jako kontekst rynkowy. Fallback na stara liste gdy ensemble
+            # nie wystawia feature_names.
             feature_snapshot = {
                 f: round(float(feat_src[f][i]), 4)
-                for f in _TOP_FEATURES_SNAPSHOT if f in feat_src
+                for f in _SNAP_FEATS if f in feat_src
             }
 
             open_pos = {

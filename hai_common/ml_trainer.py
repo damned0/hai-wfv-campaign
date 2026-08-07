@@ -173,10 +173,11 @@ MODEL_FEATURES = {
     # jako "fabryka falszywych sygnalow" - duzo transakcji, slaby PF. Test:
     # czy kontekst makro (Gold/Oil/SP500/VIX/US10Y/DXY/BTC dominance) pomaga
     # mu byc bardziej selektywnym. User: "te dane tez tylko szumialy ale
-    # dobra daj je" - eksperyment, nie pewnik.)
+    # dobra daj je" - eksperyment, nie pewnik. USUNIETE 2026-08-06: potwierdzony
+    # szum (gold/oil/sp500/vix/us10y/dxy), zero wartosci predykcyjnej - zostaje
+    # tylko btc_dominance_chg (odrebny, bardziej bezposredni sygnal).)
     'cat': _CORE_FEATURES + [
-        'gold_chg', 'oil_wti_chg', 'sp500_chg', 'vix_chg',
-        'us10y_chg', 'dxy_chg', 'btc_dominance_chg',
+        'btc_dominance_chg',
         'dist_below_liq', 'dist_above_liq',  # mapa likwidacji (gen.Core, +0.100 wal.)
     ],
     # HISTGB - "uniwersalny": 10 core + 9 = 19 cech (bylo: pelny FEATURE_NAMES
@@ -689,6 +690,40 @@ def calc_rptr_features(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray,
     return out
 
 
+def calc_x_features(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray,
+                    volumes: np.ndarray) -> Dict[str, np.ndarray]:
+    """Wektoryzowane EKSPERYMENTALNE cechy x_* (parytet z hai_common.features,
+    audyt 2026-08-05) + vwap_dev. Do cache WFV, zeby configi divcore (i inne)
+    mogly ich uzywac przez feature_mix. Trailing rolling, min_periods=window."""
+    n = len(closes)
+    c = pd.Series(closes); h = pd.Series(highs); l = pd.Series(lows); v = pd.Series(volumes)
+    out: Dict[str, np.ndarray] = {}
+
+    rets = c.pct_change()
+    out['x_real_vol_6h'] = rets.rolling(6, min_periods=6).std().fillna(0.0).values * 100
+    out['x_real_vol_24h'] = rets.rolling(24, min_periods=24).std().fillna(0.0).values * 100
+
+    hl = (h / l).clip(lower=1e-9).apply(np.log)
+    out['x_parkinson_24h'] = (np.sqrt((1.0 / (4 * np.log(2))) * (hl**2).rolling(25, min_periods=25).mean())).fillna(0.0).values * 100
+
+    out['x_rsi_7'] = calc_rsi(closes, 7)
+    out['x_rsi_21'] = calc_rsi(closes, 21)
+
+    for _bars in (4, 24, 168):
+        out[f'x_roc_{_bars}'] = ((c / c.shift(_bars) - 1) * 100).fillna(0.0).values
+
+    for _f, _s in ((9, 21), (21, 55), (50, 200)):
+        _ef = calc_ema(closes, _f); _es = calc_ema(closes, _s)
+        out[f'x_ema{_f}_over_{_s}'] = np.where(_es > 0, _ef / np.where(_es == 0, np.nan, _es) - 1, 0.0)
+
+    tp = (h + l + c) / 3.0
+    tvol = v.rolling(24, min_periods=24).sum()
+    vwap = (tp * v).rolling(24, min_periods=24).sum() / tvol.replace(0, np.nan)
+    out['vwap_dev'] = np.where(vwap.notna() & (vwap > 0), (c / vwap - 1) * 100, 0.0)
+
+    return out
+
+
 def triple_barrier_label(cur: float, atr: float, highs: np.ndarray, lows: np.ndarray,
                           i: int, n: int, lookahead: int, tp_mult: float, sl_mult: float) -> int:
     """Triple Barrier 3-klasowy (0=NEUTRAL,1=LONG,2=SHORT), parametryzowany po
@@ -979,6 +1014,7 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
     sr_dist_arr, sr_strength_arr, sh_level_ff, sl_level_ff = calc_swing_sr(closes, highs, lows)
     fib_dist_arr = calc_fib_dist(closes, sh_level_ff, sl_level_ff)
     rptr_arr = calc_rptr_features(closes, highs, lows, volumes, rsi_arr, atr_arr)
+    x_arr = calc_x_features(closes, highs, lows, volumes)
 
     # === NEW v2.0: PRE-COMPUTE 4H (raz dla calego szeregu 4h) ===
     closes_4h_all = df_4h['close'].values.astype(np.float64)
@@ -1080,6 +1116,10 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
 
         # Momentum (10-bar RoC)
         momentum = (cur / closes[i - 10] - 1) * 100 if i >= 10 else 0
+
+        # CVD x ADX (orderflow; parytet lejek_of_cvd HAI_LEJEK_CVD). W cache WFV
+        # brak orderflow w data-dict -> 0.0 domyslnie (MIX-CXL-rev12 dostaje 0).
+        cvd_x_adx = 0.0
 
         # === VOLUME FEATURES ===
         vol_window = volumes[max(0, i - 30):i]
@@ -1332,8 +1372,24 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
             'e_phantomflow_score': float(sr_strength_arr[i]),
             'e_rsi_x_funding': float(rsi) * float(funding_rate),
             'e_atr_pct_x_vol_zscore': float(atr_pct) * float(volume_zscore_arr[i]),
-            'x_obv_slope_24h': float(rptr_arr['x_obv_slope_24h'][i]),
-            'x_weekend': 1.0 if dow in (5.0, 6.0) else 0.0,
+             'x_obv_slope_24h': float(rptr_arr['x_obv_slope_24h'][i]),
+             'x_weekend': 1.0 if dow in (5.0, 6.0) else 0.0,
+             # EKSPERYMENTALNE x_* (2026-08-06): dodane do cache WFV z calc_x_features
+             # (parytet hai_common.features) - divcore configi ich uzywaja.
+             'x_real_vol_6h': float(x_arr['x_real_vol_6h'][i]),
+             'x_real_vol_24h': float(x_arr['x_real_vol_24h'][i]),
+             'x_parkinson_24h': float(x_arr['x_parkinson_24h'][i]),
+             'x_rsi_7': float(x_arr['x_rsi_7'][i]),
+             'x_rsi_21': float(x_arr['x_rsi_21'][i]),
+             'x_roc_4': float(x_arr['x_roc_4'][i]),
+             'x_roc_24': float(x_arr['x_roc_24'][i]),
+             'x_roc_168': float(x_arr['x_roc_168'][i]),
+             'x_ema9_over_21': float(x_arr['x_ema9_over_21'][i]),
+             'x_ema21_over_55': float(x_arr['x_ema21_over_55'][i]),
+             'x_ema50_over_200': float(x_arr['x_ema50_over_200'][i]),
+             'vwap_dev': float(x_arr['vwap_dev'][i]),
+             'x_btc_leadlag': float(macro_vals['btc_dominance']) - float(momentum),
+             'cvd_x_adx': float(cvd_x_adx),
             # Fear & Greed Index (audyt 2026-07-04, pelna historia 2018-dzis)
             'fear_greed': float(fear_greed),
             # BTC context (audyt 2026-07-04, korelacja altcoinow z BTC 0.6-0.85)
