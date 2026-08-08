@@ -132,6 +132,36 @@ def _calc_adx_live(prices: List[float], period: int = 14) -> float:
     return round(sum(dx_vals[-period:]) / period, 1) if dx_vals else 0.0
 
 
+def _trend_jak_trening(prices) -> float:
+    """Trend dokladnie jak ml_trainer.precompute_trend_series: EMA(9) vs EMA(21),
+    prog +-0.3%.
+
+    FIX 2026-08-08 (tools/test_parytet_cech): trend_4h/trend_1d liczylo sie tu
+    przez strategy.detect_trend(), a to CZWARTA definicja tej samej cechy —
+    ai_strategy uzywa EMA(21)/EMA(50) z progiem 0.5%, base.py EMA(21)/EMA(200)
+    z progiem 0.5%, backtester uzywal ROC(10) z progiem 0.1, a trening EMA(9)/
+    EMA(21) z progiem 0.3%. Model uczyl sie jednej definicji, a na produkcji
+    dostawal inna — przy innych okresach EMA potrafi to dac przeciwny znak.
+    """
+    try:
+        import numpy as _np
+        p = _np.asarray(prices, dtype=_np.float64)
+        if len(p) < 21:
+            return 0.0
+        _s = pd.Series(p) if "pd" in globals() else None
+        if _s is None:
+            import pandas as _pd
+            _s = _pd.Series(p)
+        ef = _s.ewm(span=9, adjust=False).mean().values[-1]
+        es = _s.ewm(span=21, adjust=False).mean().values[-1]
+        if es == 0:
+            return 0.0
+        d = (ef - es) / es * 100
+        return 1.0 if d > 0.3 else (-1.0 if d < -0.3 else 0.0)
+    except Exception:
+        return 0.0
+
+
 def _trend_to_float(trend: Any) -> float:
     if isinstance(trend, str):
         t = trend.upper()
@@ -577,14 +607,14 @@ def build_features_live(
 
         if prices_4h and len(prices_4h) >= MIN_PRICES_4H:
             rsi_4h = float(strategy.calculate_rsi(prices_4h, 14))
-            trend_4h = _trend_to_float(strategy.detect_trend(prices_4h))
+            trend_4h = _trend_jak_trening(prices_4h)   # parytet z treningiem (2026-08-08)
         else:
             rsi_4h = 50.0
             trend_4h = 0.0
 
         if prices_1d and len(prices_1d) >= MIN_PRICES_1D:
             rsi_1d = float(strategy.calculate_rsi(prices_1d, 14))
-            trend_1d = _trend_to_float(strategy.detect_trend(prices_1d))
+            trend_1d = _trend_jak_trening(prices_1d)   # parytet z treningiem (2026-08-08)
         else:
             rsi_1d = 50.0
             trend_1d = 0.0

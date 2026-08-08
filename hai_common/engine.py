@@ -181,6 +181,10 @@ class TradingEngine:
                     if len(prices) < self._strategy.min_history:
                         continue
                     in_position = symbol in open_map
+                    # high/low/timestamp do analyze (2026-08-07): bez nich sciezka
+                    # SYGNALU liczyla cechy na samych close — a to ona decyduje
+                    # o wejsciu w pozycje. Patrz _ohlc_aux.
+                    _h, _l, _t = self._ohlc_aux(symbol, prices)
                     result = self._strategy.analyze(
                         symbol, prices,
                         volumes=volumes_1h.get(symbol),
@@ -188,6 +192,7 @@ class TradingEngine:
                         prices_1d=data_1d.get(symbol, []),
                         in_position=in_position,
                         entry_price=open_map[symbol]["entry_price"] if in_position else 0.0,
+                        highs_1h=_h, lows_1h=_l, timestamps_1h=_t,
                     )
                     await self._process_signal(symbol, result,
                                                prices_1h=prices,
@@ -241,14 +246,61 @@ class TradingEngine:
                             tp = config.trading.take_profit_pct
                         if not sl:
                             sl = config.trading.stop_loss_pct
-                        if pnl_pct >= tp:
-                            result = state.close_position(symbol, cur, mode, f"TP +{pnl_pct:.1f}%")
+
+                        # 2026-08-04: partial-TP + trailing (koncept Hauzera,
+                        # RAPORT_EDGE.md §12, backtest PF 2.45->5.21, WR 57%->81%).
+                        # Faza 1 (pelna pozycja): 50% do TP -> zamknij 75% pozycji.
+                        # Faza 2 (partial_closed): 75% do TP -> aktywuj trailing na
+                        # resztce (25%). Faza 3 (trailing_active): cel 150% oryg. TP,
+                        # albo trailing-stop = 85% szczytowego pnl_pct od aktywacji.
+                        # Istniejace juz otwarte pozycje maja partial_closed/trailing_
+                        # active domyslnie False -> od razu wchodza w Faze 1.
+                        if pos.get("trailing_active"):
+                            peak_price = pos.get("peak_price") or cur
+                            is_new_peak = (cur > peak_price) if pos["side"] != "SHORT" else (cur < peak_price)
+                            if is_new_peak:
+                                peak_price = cur
+                                state.update_position_meta(symbol, mode, peak_price=peak_price)
+                            if pos["side"] == "SHORT":
+                                peak_pnl_pct = ((entry - peak_price) / entry) * 100
+                            else:
+                                peak_pnl_pct = ((peak_price - entry) / entry) * 100
+                            trail_stop_pct = peak_pnl_pct * 0.85
+                            full_target_pct = tp * 1.5
+
+                            if pnl_pct >= full_target_pct:
+                                result = state.close_position(symbol, cur, mode, f"TP150 +{pnl_pct:.1f}%")
+                                if result:
+                                    risk.record_trade(result["pnl"])
+                                    risk.reset_consecutive_losses()
+                                    risk.clear_pyramid(symbol)
+                                    self._pyramided.discard(symbol)
+                                    self._position_entry_time.pop(symbol, None)
+                            elif pnl_pct <= trail_stop_pct:
+                                result = state.close_position(symbol, cur, mode, f"TRAIL {pnl_pct:.1f}% (peak {peak_pnl_pct:.1f}%)")
+                                if result:
+                                    risk.record_trade(result["pnl"])
+                                    risk.clear_pyramid(symbol)
+                                    self._pyramided.discard(symbol)
+                                    self._position_entry_time.pop(symbol, None)
+                            continue
+
+                        if pos.get("partial_closed"):
+                            if pnl_pct >= tp * 0.75:
+                                state.update_position_meta(symbol, mode, trailing_active=True, peak_price=cur)
+                            elif pnl_pct <= -sl:
+                                result = state.close_position(symbol, cur, mode, f"SL {abs(pnl_pct):.1f}% (po partial)")
+                                if result:
+                                    risk.record_sl(symbol)
+                                    risk.record_trade(result["pnl"])
+                                    self._pyramided.discard(symbol)
+                                    self._position_entry_time.pop(symbol, None)
+                            continue
+
+                        if pnl_pct >= tp * 0.5:
+                            result = state.partial_close_position(symbol, cur, 0.75, mode, f"PARTIAL +{pnl_pct:.1f}% (50% do TP)")
                             if result:
                                 risk.record_trade(result["pnl"])
-                                risk.reset_consecutive_losses()
-                                risk.clear_pyramid(symbol)
-                                self._pyramided.discard(symbol)
-                                self._position_entry_time.pop(symbol, None)
                         elif pnl_pct <= -sl:
                             result = state.close_position(symbol, cur, mode, f"SL {abs(pnl_pct):.1f}%")
                             if result:
@@ -496,6 +548,34 @@ class TradingEngine:
                 logger.info(f"PYRAMID {side} {symbol} +{add_usdt:.1f}USDT @ {cur_price} "
                             f"| elapsed={elapsed/3600:.1f}h | conf_candle={last_close:.4f}")
 
+    def _ohlc_aux(self, symbol: str, prices_1h):
+        """(highs, lows, timestamps) z historii 1h albo (None, None, None).
+
+        FIX 2026-08-07: engine przekazywal do build_features_live SAME CLOSE.
+        Zmierzone na AVAX: 22 cechy w live mialy zla wartosc — czesc None
+        (r_cci_20, r_di_spread, e_* SMC, x_parkinson_24h), a czesc, grozniejsza,
+        0.0 zamiast realnej liczby (sr_node_strength 0 zamiast 49, vwap_dev 0
+        zamiast -1.11). Zero nie znaczy "brak" — dla skalera to skrajna wartosc
+        OOD, wiec modele dostawaly smieciowe wejscie. Swiece maja high/low/
+        timestamp od zawsze, nikt ich nie podawal.
+
+        Dlugosci MUSZA sie zgadzac: gdy wolajacy podal wlasne prices_1h o innej
+        dlugosci, dolaczenie high/low z historii przesunieoby szeregi wzgledem
+        siebie — cicha korupcja gorsza niz brak cech.
+        """
+        hist = self._price_history_1h.get(symbol, [])
+        if not hist:
+            return None, None, None
+        if len(hist) != len(prices_1h or []):
+            logger.debug(f"{symbol}: historia {len(hist)} != prices_1h "
+                         f"{len(prices_1h or [])} — pomijam high/low")
+            return None, None, None
+        try:
+            return ([c["high"] for c in hist], [c["low"] for c in hist],
+                    [c["timestamp"] for c in hist])
+        except (KeyError, TypeError):
+            return None, None, None
+
     def _compute_features(self, symbol: str,
                           prices_1h: Optional[List[float]],
                           prices_4h: Optional[List[float]],
@@ -509,6 +589,17 @@ class TradingEngine:
                 volumes_1h = [c["volume"] for c in self._price_history_1h.get(symbol, [])]
                 prices_4h = [c["close"] for c in self._price_history_4h.get(symbol, [])]
                 prices_1d = [c["close"] for c in self._price_history_1d.get(symbol, [])]
+
+            # === FIX 2026-08-07: engine NIE przekazywal high/low ani symbolu ===
+            # Skutek zmierzony na AVAX: 22 cechy w live mialy zla wartosc. Czesc
+            # byla None (r_cci_20, r_di_spread, e_* SMC, x_parkinson_24h), a czesc
+            # — grozniejsza — miala 0.0 zamiast realnej liczby: sr_node_strength
+            # 0 zamiast 49, vwap_dev 0 zamiast -1.11, fib_dist_pct 0 zamiast 0.41.
+            # Zero nie znaczy "brak": dla skalera to skrajna wartosc OOD, wiec
+            # modele dostawaly smieciowe wejscie i nikt tego nie widzial.
+            # Swiece maja te pola od zawsze (patrz _price_history_1h: timestamp/
+            # open/high/low/close/volume) — po prostu nikt ich nie podawal.
+            _highs, _lows, _ts = self._ohlc_aux(symbol, prices_1h)
 
             strategy = self._strategy
             if strategy is None:
@@ -540,6 +631,13 @@ class TradingEngine:
                 taker_buy_ratio=wh["taker_buy_ratio"],
                 ls_ratio=wh["ls_ratio"],
                 ls_ratio_chg_24h=wh["ls_ratio_chg_24h"],
+                # high/low: odblokowuja SMC, Ichimoku, VWAP, S/R, Parkinson.
+                highs_1h=_highs,
+                lows_1h=_lows,
+                # symbol + timestampy: mapa likwidacji (dist_*_liq) — ta sama
+                # funkcja co w treningu i backtescie, patrz liqmap_features.
+                symbol=symbol,
+                timestamps_1h=_ts,
             )
         except Exception as e:
             logger.error(f"_compute_features error {symbol}: {e}")

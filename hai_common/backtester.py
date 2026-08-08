@@ -482,6 +482,26 @@ _TOP_FEATURES_SNAPSHOT = [
 ]
 
 
+def _trend_ema_like(closes: np.ndarray) -> np.ndarray:
+    """Trend jak w ml_trainer.precompute_trend_series: EMA(9) vs EMA(21),
+    prog +-0.3%. JEDNA definicja dla treningu i backtestu (2026-08-08).
+
+    Wolamy funkcje z ml_trainer, a nie wlasna kopie — kopia rozjechalaby sie
+    przy pierwszej zmianie progu, czyli powtorzylaby blad, ktory ten fix usuwa.
+    Fallback tylko na wypadek braku importu."""
+    try:
+        from .ml_trainer import precompute_trend_series
+        return precompute_trend_series(closes, 9, 21).astype(np.float64)
+    except Exception:
+        if len(closes) < 21:
+            return np.zeros(len(closes))
+        _s = pd.Series(closes)
+        ef = _s.ewm(span=9, adjust=False).mean().values
+        es = _s.ewm(span=21, adjust=False).mean().values
+        d = np.where(es != 0, (ef - es) / es * 100, 0.0)
+        return np.where(d > 0.3, 1.0, np.where(d < -0.3, -1.0, 0.0))
+
+
 class Backtester:
     """v9.1 — pełna doktryna + asyncio parallelizm."""
 
@@ -547,6 +567,231 @@ class Backtester:
     # ─────────────────────────────────────────────────────────────────────
     # CORE SIMULATION — v9.2 vectorized (sync, uruchamiana w ThreadPoolExecutor)
     # ─────────────────────────────────────────────────────────────────────
+
+    def _load_deriv_arrays(self, symbol: str, _tdf, n: int) -> Dict[str, np.ndarray]:
+        """Szeregi derywatow (taker/funding/OI/ls_ratio) z magazynu, wyrownane
+        do siatki 1h backtestu.
+
+        WYDZIELONE 2026-08-08 z run_simulation_ai — z tego samego powodu co
+        _build_feat_src: test parytetu (tools/test_parytet_cech.py) musi wolac
+        TE SAMA sciezke, ktorej uzywa symulacja. Wczesniej test budowal wlasny
+        slownik `neural` z zerami i zglaszal to jako blad backtestera, choc
+        backtester liczyl poprawnie — falszywy alarm na 6 cechach.
+        """
+        def _ts_col_to_ms(col):
+            """Kolumna timestamp z warehouse -> int64 ms. FIX 2026-07-18 (F1
+            gen.Dir-v1): parquety maja datetime64[ms], a stary kod robil
+            .astype('int64')//1_000_000 zakladajac ns -> wartosci ~1.78e6
+            zamiast ~1.78e12 -> ZERO trafien w merge z ts_ms swiec -> po
+            fillna(0) WSZYSTKIE cechy derywatow (funding_*, oi_*,
+            taker_buy_ratio) byly ZERAMI w kazdym backtescie i snapshocie,
+            mimo ze trening (ml_trainer, pd.to_datetime+searchsorted) widzial
+            je poprawnie - czyli modele dostawaly na inferencji rozklad inny
+            niz na treningu."""
+            s = pd.to_datetime(col)
+            return (s.astype("datetime64[ms]").astype("int64")).astype("int64")
+
+        out: Dict[str, np.ndarray] = {}
+        _sym_stem = self._sym_to_filename(symbol)
+        _wh_deriv = Path(os.environ.get("HAI_WH", "/root/ProjektHAI/data_warehouse")) / "derivatives"
+        try:
+            _tr_path = _wh_deriv / "taker_ratio" / f"{_sym_stem}.parquet"
+            if _tr_path.exists():
+                _tr_df = pd.read_parquet(_tr_path)
+                _tr_df["ts_ms"] = _ts_col_to_ms(_tr_df["timestamp"])
+                out["taker_buy_ratio"] = (
+                    _tdf.merge(_tr_df[["ts_ms", "taker_buy_ratio"]], on="ts_ms", how="left")
+                    ["taker_buy_ratio"].fillna(0.5).values
+                )
+        except Exception:
+            pass
+        try:
+            _fr_path = _wh_deriv / "funding_rates" / f"{_sym_stem}.parquet"
+            if _fr_path.exists():
+                _fr_df = pd.read_parquet(_fr_path).dropna()
+                _fc = "funding_rate" if "funding_rate" in _fr_df.columns else "close"
+                _fr_df["ts_ms"] = _ts_col_to_ms(_fr_df["timestamp"])
+                _fr_arr = (
+                    _tdf.merge(_fr_df[["ts_ms", _fc]].assign(_v=_fr_df[_fc] * 100)[["ts_ms", "_v"]],
+                               on="ts_ms", how="left")["_v"].values.astype(float)
+                )
+                _fr_arr = pd.Series(_fr_arr).ffill().fillna(0.0).values
+                out["funding_rate"] = _fr_arr
+                # funding_change_24h — 24 świece 1h wstecz (spojne z ml_trainer.py)
+                _fr_prev = np.roll(_fr_arr, 24)
+                _fr_prev[:24] = _fr_arr[:24]
+                out["funding_change_24h"] = _fr_arr - _fr_prev
+        except Exception:
+            pass
+        try:
+            _oi_path = _wh_deriv / "open_interest" / f"{_sym_stem}.parquet"
+            if _oi_path.exists():
+                _oi_df = pd.read_parquet(_oi_path).dropna()
+                _oi_df["ts_ms"] = _ts_col_to_ms(_oi_df["timestamp"])
+                _oi_arr = (
+                    _tdf.merge(_oi_df[["ts_ms", "close"]], on="ts_ms", how="left")
+                    ["close"].values.astype(float)
+                )
+                _oi_arr = pd.Series(_oi_arr).ffill().fillna(0.0).values
+                _oi_prev = np.roll(_oi_arr, 24); _oi_prev[:24] = _oi_arr[:24]
+                out["oi_total_log"]  = np.log1p(_oi_arr)
+                out["oi_change_24h"] = np.where(_oi_prev > 0, (_oi_arr - _oi_prev) / _oi_prev, 0.0)
+                _roll30 = pd.Series(_oi_arr).rolling(30*24, min_periods=24)
+                out["oi_zscore_30d"] = ((_oi_arr - _roll30.mean().values) /
+                                        _roll30.std().values.clip(1e-8)).clip(-5, 5)
+        except Exception:
+            pass
+        try:
+            # LS RATIO (B2 gen.Dir-v1, 2026-07-19) - z magazynu, 1h; neutralne
+            # 1.0 gdy brak danych/symbolu (spojne z ml_trainer).
+            _ls_path = _wh_deriv / "ls_ratio" / f"{_sym_stem}.parquet"
+            out["ls_ratio"] = np.full(n, 1.0)
+            out["ls_ratio_chg_24h"] = np.zeros(n)
+            if _ls_path.exists():
+                _ls_df = pd.read_parquet(_ls_path).dropna()
+                _ls_df["ts_ms"] = _ts_col_to_ms(_ls_df["timestamp"])
+                _ls_arr = (
+                    _tdf.merge(_ls_df[["ts_ms", "ls_ratio"]], on="ts_ms", how="left")
+                    ["ls_ratio"].values.astype(float)
+                )
+                _ls_arr = pd.Series(_ls_arr).ffill().fillna(1.0).values
+                out["ls_ratio"] = _ls_arr
+                _ls_prev = np.roll(_ls_arr, 24); _ls_prev[:24] = _ls_arr[:24]
+                out["ls_ratio_chg_24h"] = _ls_arr - _ls_prev
+        except Exception:
+            pass
+        return out
+
+    def _build_feat_src(self, ind: Dict, neural: Dict, candles_1h: List[Dict],
+                        symbol: str, n: int) -> Dict[str, np.ndarray]:
+        """Buduje slownik cecha -> tablica, ktory karmi predykcje w backtescie.
+
+        WYDZIELONE 2026-08-08 z run_simulation_ai. Powod: test parytetu trzech
+        sciezek (tools/test_parytet_cech.py) musi sprawdzac TE SAMA sciezke,
+        ktorej uzywa symulacja. Gdyby test mial wlasna kopie tej logiki,
+        rozjechalby sie z produkcja przy pierwszej zmianie — czyli dokladnie ten
+        blad, ktory ten test ma wykrywac.
+        """
+        feat_src = {**{k: v for k, v in ind.items() if not k.startswith("_")},
+                    **neural}
+
+        # Interakcja funding x OI-zscore (B3 gen.Dir-v1, 2026-07-19) - spojne
+        # z ml_trainer (record dict). Oba czynniki juz w feat_src (neural).
+        _fr_v = feat_src.get("funding_rate")
+        _oz_v = feat_src.get("oi_zscore_30d")
+        if _fr_v is not None and _oz_v is not None:
+            feat_src["funding_x_oizscore"] = np.asarray(_fr_v) * np.asarray(_oz_v)
+
+        # Cechy mapy likwidacji (dist_below_liq/dist_above_liq) - WSPOLNA funkcja z
+        # ml_trainer (parzystosc!). Bez tego feat_src.get(f, zeros) wstawilby zera
+        # dla modeli wytrenowanych z ta cecha -> scaler OOD -> smieciowy routing
+        # (dokladnie bug derywatow). Ledger inkrementalny z okna; brak -> DIST_DEFAULT.
+        try:
+            from .liqmap_features import compute_liq_dist_from_warehouse
+            _lo = pd.DataFrame({
+                "timestamp": pd.to_datetime([c["timestamp"] for c in candles_1h], unit="ms"),
+                "close": np.array([c["close"] for c in candles_1h], dtype=np.float64),
+                "high":  np.array([c["high"]  for c in candles_1h], dtype=np.float64),
+                "low":   np.array([c["low"]   for c in candles_1h], dtype=np.float64),
+            })
+            _db, _da = compute_liq_dist_from_warehouse(_lo, symbol)
+            feat_src["dist_below_liq"] = _db
+            feat_src["dist_above_liq"] = _da
+        except Exception as _liq_e:
+            logger.debug(f"liq features skip: {_liq_e}")
+            feat_src["dist_below_liq"] = np.full(n, 30.0)
+            feat_src["dist_above_liq"] = np.full(n, 30.0)
+
+        # === CECHY x_*/r_*/e_* — parytet trening <-> backtest (2026-08-08) ===
+        # DO DZIS backtester ICH NIE LICZYL. Model trenowal sie z x_real_vol_6h czy
+        # r_stoch_rsi (dataset je ma, bramka feature_mix przepuszczala), a w symulacji
+        # dostawal w tym miejscu ZERA — bo predykcja robi feat_src.get(f, np.zeros(n)).
+        # Skaler zamienial te zera w skrajne OOD. Skutek: KAZDY wynik WFV dla configu
+        # z warstwa rptr/x_ mierzyl model z polowa wejscia zastapiona zerami, a nie
+        # wartosc tych cech. Tlumaczy to, czemu rptr nigdy nie pokazal zysku i czemu
+        # ET w kampanii v8 dal ZERO transakcji (jego zestaw byl w wiekszosci nowy).
+        #
+        # Wolamy TE SAME funkcje co ml_trainer — nie wlasne kopie formul.
+        try:
+            from . import ml_trainer as _mt
+            _c = np.array([c["close"]  for c in candles_1h], dtype=np.float64)
+            _h = np.array([c["high"]   for c in candles_1h], dtype=np.float64)
+            _l = np.array([c["low"]    for c in candles_1h], dtype=np.float64)
+            _v = np.array([c["volume"] for c in candles_1h], dtype=np.float64)
+            _extra = {}
+            if hasattr(_mt, "calc_x_features"):
+                _extra.update(_mt.calc_x_features(_c, _h, _l, _v))
+            if hasattr(_mt, "calc_rptr_features"):
+                _rsi = np.asarray(ind.get("rsi", np.zeros(n)), dtype=np.float64)
+                _atr = np.asarray(ind.get("_atr_abs", np.zeros(n)), dtype=np.float64)
+                _extra.update(_mt.calc_rptr_features(_c, _h, _l, _v, _rsi, _atr))
+            _kolizje = [k for k in _extra if k in feat_src]
+            if _kolizje:
+                logger.debug(f"rptr/x_: pomijam kolizje z istniejacymi: {_kolizje}")
+            for _k, _val in _extra.items():
+                if _k not in feat_src and len(np.asarray(_val)) == n:
+                    feat_src[_k] = np.asarray(_val, dtype=np.float64)
+        except Exception as _x_e:
+            logger.warning(f"cechy x_/rptr nieobliczone ({_x_e}) — modele z tymi "
+                           f"cechami dostana ZERA (wynik niewiarygodny)")
+
+        # === ALIASY I INTERAKCJE — parytet z ml_trainer (2026-08-08) ===
+        # Wykryte przez tools/test_parytet_cech.py: trening je liczyl, backtest nie,
+        # wiec modele dostawaly tu zera. Wzory 1:1 z ml_trainer (numery linii to
+        # stan na 2026-08-08): r_htf_trend_4h=trend_4h (1361),
+        # e_phantomflow_score=sr_node_strength (1372), e_rsi_x_funding (1373),
+        # e_atr_pct_x_vol_zscore (1374), x_weekend (1376).
+        def _we(nazwa):
+            v = feat_src.get(nazwa)
+            return np.asarray(v, dtype=np.float64) if v is not None else None
+        _aliasy = {
+            "r_htf_trend_4h":         _we("trend_4h"),
+            "e_phantomflow_score":    _we("sr_node_strength"),
+        }
+        _rsi_a, _fund_a = _we("rsi"), _we("funding_rate")
+        if _rsi_a is not None and _fund_a is not None:
+            _aliasy["e_rsi_x_funding"] = _rsi_a * _fund_a
+        _atr_a, _vz_a = _we("atr_pct"), _we("volume_zscore")
+        if _atr_a is not None and _vz_a is not None:
+            _aliasy["e_atr_pct_x_vol_zscore"] = _atr_a * _vz_a
+        _dow_a = _we("day_of_week")
+        if _dow_a is not None:
+            _aliasy["x_weekend"] = np.where((_dow_a == 5.0) | (_dow_a == 6.0), 1.0, 0.0)
+        # x_btc_leadlag = btc_dominance - momentum (ml_trainer:1391). Backtester
+        # mapuje ten sam szereg pod nazwa btc_dominance_chg (macro_feats), bo
+        # btc_dominance.value w magazynie JEST juz gotowa zmiana, nie poziomem.
+        _btc_a, _mom_a = _we("btc_dominance_chg"), _we("momentum")
+        if _btc_a is not None and _mom_a is not None:
+            _aliasy["x_btc_leadlag"] = _btc_a - _mom_a
+        for _k, _v in _aliasy.items():
+            if _v is not None and _k not in feat_src and len(_v) == n:
+                feat_src[_k] = _v
+
+        # Cechy liczone w ml_trainer osobnymi funkcjami (divergence / S&D /
+        # wiek przeciecia EMA). Wolamy TE SAME funkcje, nie kopie formul.
+        try:
+            from . import ml_trainer as _mt2
+            _c2 = np.array([c["close"] for c in candles_1h], dtype=np.float64)
+            _h2 = np.array([c["high"]  for c in candles_1h], dtype=np.float64)
+            _l2 = np.array([c["low"]   for c in candles_1h], dtype=np.float64)
+            _rsi2 = np.asarray(ind.get("rsi", np.zeros(n)), dtype=np.float64)
+            _atr2 = np.asarray(ind.get("_atr_abs", np.zeros(n)), dtype=np.float64)
+            _poz = {}
+            if hasattr(_mt2, "calc_divergence"):
+                _poz["div_rsi"] = _mt2.calc_divergence(_c2, _rsi2, 20)
+            if hasattr(_mt2, "calc_sd_proximity"):
+                _poz["sd_prox"] = _mt2.calc_sd_proximity(_h2, _l2, _c2, _atr2, 50)
+            if hasattr(_mt2, "calc_bars_since_cross"):
+                _poz["bars_cross"] = _mt2.calc_bars_since_cross(_c2, 20, 50, 100)
+            for _k, _v in _poz.items():
+                _a = np.asarray(_v, dtype=np.float64)
+                if _k not in feat_src and _a.ndim == 1 and len(_a) == n:
+                    feat_src[_k] = _a
+        except Exception as _p_e:
+            logger.warning(f"cechy div/sd/bars nieobliczone ({_p_e}) — modele z nimi "
+                           f"dostana ZERA")
+
+        return feat_src
 
     def _precompute_indicators(
         self,
@@ -626,8 +871,14 @@ class Backtester:
             c4h = np.array([c["close"] for c in candles_4h], dtype=np.float64)
             t4h = np.array([c["timestamp"] for c in candles_4h], dtype=np.int64)
             rsi_4h_s = _vec_rsi(c4h, 14)
-            roc_4h   = _vec_roc(c4h, 10)
-            trend_4h_s = np.where(roc_4h > 0.1, 1.0, np.where(roc_4h < -0.1, -1.0, 0.0))
+            # FIX 2026-08-08 (test_parytet_cech): bylo ROC(10) z progiem +-0.1,
+            # a trening liczy trend jako EMA(9) vs EMA(21) z progiem +-0.3%
+            # (ml_trainer.precompute_trend_series). Dwie ROZNE definicje tej samej
+            # cechy: model uczyl sie jednej, w symulacji dostawal druga. Uwaga —
+            # rozjazd bywa niewidoczny w pojedynczej swiecy (oba wzory czesto daja
+            # ten sam znak), wiec nie da sie go zlapac punktowo; widac go dopiero
+            # przy porownaniu FORMUL. trend_1h byl juz liczony poprawnie (EMA/0.3).
+            trend_4h_s = _trend_ema_like(c4h)
             rsi_4h   = _map_tf_to_1h(rsi_4h_s, t4h, t1h, 50.0)
             trend_4h = _map_tf_to_1h(trend_4h_s, t4h, t1h, 0.0)
         else:
@@ -639,8 +890,7 @@ class Backtester:
             c1d = np.array([c["close"] for c in candles_1d], dtype=np.float64)
             t1d = np.array([c["timestamp"] for c in candles_1d], dtype=np.int64)
             rsi_1d_s = _vec_rsi(c1d, 14)
-            roc_1d   = _vec_roc(c1d, 10)
-            trend_1d_s = np.where(roc_1d > 0.1, 1.0, np.where(roc_1d < -0.1, -1.0, 0.0))
+            trend_1d_s = _trend_ema_like(c1d)   # patrz komentarz przy trend_4h
             rsi_1d   = _map_tf_to_1h(rsi_1d_s, t1d, t1h, 50.0)
             trend_1d = _map_tf_to_1h(trend_1d_s, t1d, t1h, 0.0)
         else:
@@ -662,6 +912,11 @@ class Backtester:
 
         return {
             **macro_feats,
+            # ATR BEZWZGLEDNY (nie %) — potrzebny dla calc_rptr_features, ktore
+            # w ml_trainer dostaje calc_atr(highs, lows, closes), a nie atr_pct.
+            # Prefiks "_" wyklucza go z feat_src (patrz filtr not k.startswith("_")),
+            # wiec nie trafia do modeli jako cecha — sluzy tylko do liczenia rptr.
+            "_atr_abs":           atr_14,
             "rsi":                rsi_1h,
             "rsi_4h":             rsi_4h,
             "rsi_1d":             rsi_1d,
@@ -772,88 +1027,7 @@ class Backtester:
                   "transformer_pred_return_4h": np.zeros(n),
                   "taker_buy_ratio": np.full(n, 0.5)}
 
-        def _ts_col_to_ms(col):
-            """Kolumna timestamp z warehouse -> int64 ms. FIX 2026-07-18 (F1
-            gen.Dir-v1): parquety maja datetime64[ms], a stary kod robil
-            .astype('int64')//1_000_000 zakladajac ns -> wartosci ~1.78e6
-            zamiast ~1.78e12 -> ZERO trafien w merge z ts_ms swiec -> po
-            fillna(0) WSZYSTKIE cechy derywatow (funding_*, oi_*,
-            taker_buy_ratio) byly ZERAMI w kazdym backtescie i snapshocie,
-            mimo ze trening (ml_trainer, pd.to_datetime+searchsorted) widzial
-            je poprawnie - czyli modele dostawaly na inferencji rozklad inny
-            niz na treningu. Wykryte przez z-delta==0.00 dla calego bloku
-            derywatow w realizowanej atrybucji per model (378k tradow)."""
-            s = pd.to_datetime(col)
-            return (s.astype("datetime64[ms]").astype("int64")).astype("int64")
-        # Load deriv features from warehouse (taker_buy_ratio + funding_rate + OI)
-        _sym_stem = self._sym_to_filename(symbol)
-        _wh_deriv = Path(os.environ.get("HAI_WH", "/root/ProjektHAI/data_warehouse")) / "derivatives"
-        try:
-            _tr_path = _wh_deriv / "taker_ratio" / f"{_sym_stem}.parquet"
-            if _tr_path.exists():
-                _tr_df = pd.read_parquet(_tr_path)
-                _tr_df["ts_ms"] = _ts_col_to_ms(_tr_df["timestamp"])
-                neural["taker_buy_ratio"] = (
-                    _tdf.merge(_tr_df[["ts_ms", "taker_buy_ratio"]], on="ts_ms", how="left")
-                    ["taker_buy_ratio"].fillna(0.5).values
-                )
-        except Exception:
-            pass
-        try:
-            _fr_path = _wh_deriv / "funding_rates" / f"{_sym_stem}.parquet"
-            if _fr_path.exists():
-                _fr_df = pd.read_parquet(_fr_path).dropna()
-                _fc = "funding_rate" if "funding_rate" in _fr_df.columns else "close"
-                _fr_df["ts_ms"] = _ts_col_to_ms(_fr_df["timestamp"])
-                _fr_arr = (
-                    _tdf.merge(_fr_df[["ts_ms", _fc]].assign(_v=_fr_df[_fc] * 100)[["ts_ms", "_v"]],
-                               on="ts_ms", how="left")["_v"].values.astype(float)
-                )
-                _fr_arr = pd.Series(_fr_arr).ffill().fillna(0.0).values
-                neural["funding_rate"] = _fr_arr
-                # funding_change_24h — 24 świece 1h wstecz (spojne z ml_trainer.py)
-                _fr_prev = np.roll(_fr_arr, 24)
-                _fr_prev[:24] = _fr_arr[:24]
-                neural["funding_change_24h"] = _fr_arr - _fr_prev
-        except Exception:
-            pass
-        try:
-            _oi_path = _wh_deriv / "open_interest" / f"{_sym_stem}.parquet"
-            if _oi_path.exists():
-                _oi_df = pd.read_parquet(_oi_path).dropna()
-                _oi_df["ts_ms"] = _ts_col_to_ms(_oi_df["timestamp"])
-                _oi_arr = (
-                    _tdf.merge(_oi_df[["ts_ms", "close"]], on="ts_ms", how="left")
-                    ["close"].values.astype(float)
-                )
-                _oi_arr = pd.Series(_oi_arr).ffill().fillna(0.0).values
-                _oi_prev = np.roll(_oi_arr, 24); _oi_prev[:24] = _oi_arr[:24]
-                neural["oi_total_log"]  = np.log1p(_oi_arr)
-                neural["oi_change_24h"] = np.where(_oi_prev > 0, (_oi_arr - _oi_prev) / _oi_prev, 0.0)
-                _roll30 = pd.Series(_oi_arr).rolling(30*24, min_periods=24)
-                neural["oi_zscore_30d"] = ((_oi_arr - _roll30.mean().values) /
-                                           _roll30.std().values.clip(1e-8)).clip(-5, 5)
-        except Exception:
-            pass
-        try:
-            # LS RATIO (B2 gen.Dir-v1, 2026-07-19) - z magazynu, 1h; neutralne
-            # 1.0 gdy brak danych/symbolu (spojne z ml_trainer).
-            _ls_path = _wh_deriv / "ls_ratio" / f"{_sym_stem}.parquet"
-            neural["ls_ratio"] = np.full(n, 1.0)
-            neural["ls_ratio_chg_24h"] = np.zeros(n)
-            if _ls_path.exists():
-                _ls_df = pd.read_parquet(_ls_path).dropna()
-                _ls_df["ts_ms"] = _ts_col_to_ms(_ls_df["timestamp"])
-                _ls_arr = (
-                    _tdf.merge(_ls_df[["ts_ms", "ls_ratio"]], on="ts_ms", how="left")
-                    ["ls_ratio"].values.astype(float)
-                )
-                _ls_arr = pd.Series(_ls_arr).ffill().fillna(1.0).values
-                neural["ls_ratio"] = _ls_arr
-                _ls_prev = np.roll(_ls_arr, 24); _ls_prev[:24] = _ls_arr[:24]
-                neural["ls_ratio_chg_24h"] = _ls_arr - _ls_prev
-        except Exception:
-            pass
+        neural.update(self._load_deriv_arrays(symbol, _tdf, n))
         try:
             from .features import NBEATS_PATH, TRANSFORMER_PATH
             from .nbeats import predict_nbeats_series
@@ -953,8 +1127,7 @@ class Backtester:
         except ImportError:
             _FN = [k for k in ind if not k.startswith("_")]
 
-        feat_src = {**{k: v for k, v in ind.items() if not k.startswith("_")},
-                    **neural}
+        feat_src = self._build_feat_src(ind, neural, candles_1h, symbol, n)
         # Cechy do feature_snapshot (2026-08-06): union tego co modele w ensemble
         # FAKTYCZNIE maja w feature_names + stala lista kontekstu rynkowego.
         # Bez tego snapshot ignorowal feature_mix i zapisywal cechy spoza modelu.
@@ -967,31 +1140,6 @@ class Backtester:
         except Exception:
             _SNAP_FEATS = list(_TOP_FEATURES_SNAPSHOT)
 
-        # Interakcja funding x OI-zscore (B3 gen.Dir-v1, 2026-07-19) - spojne
-        # z ml_trainer (record dict). Oba czynniki juz w feat_src (neural).
-        _fr_v = feat_src.get("funding_rate")
-        _oz_v = feat_src.get("oi_zscore_30d")
-        if _fr_v is not None and _oz_v is not None:
-            feat_src["funding_x_oizscore"] = np.asarray(_fr_v) * np.asarray(_oz_v)
-        # Cechy mapy likwidacji (dist_below_liq/dist_above_liq) - WSPOLNA funkcja z
-        # ml_trainer (parzystosc!). Bez tego feat_src.get(f, zeros) wstawilby zera
-        # dla modeli wytrenowanych z ta cecha -> scaler OOD -> smieciowy routing
-        # (dokladnie bug derywatow). Ledger inkrementalny z okna; brak -> DIST_DEFAULT.
-        try:
-            from .liqmap_features import compute_liq_dist_from_warehouse, DIST_DEFAULT
-            _lo = pd.DataFrame({
-                "timestamp": pd.to_datetime([c["timestamp"] for c in candles_1h], unit="ms"),
-                "close": np.array([c["close"] for c in candles_1h], dtype=np.float64),
-                "high":  np.array([c["high"]  for c in candles_1h], dtype=np.float64),
-                "low":   np.array([c["low"]   for c in candles_1h], dtype=np.float64),
-            })
-            _db, _da = compute_liq_dist_from_warehouse(_lo, symbol)
-            feat_src["dist_below_liq"] = _db
-            feat_src["dist_above_liq"] = _da
-        except Exception as _liq_e:
-            logger.debug(f"liq features skip: {_liq_e}")
-            feat_src["dist_below_liq"] = np.full(n, 30.0)
-            feat_src["dist_above_liq"] = np.full(n, 30.0)
         X_full = np.stack([feat_src.get(f, np.zeros(n)) for f in _FN], axis=1)
         X_pass = X_full[mask_idx] if len(mask_idx) > 0 else np.zeros((0, len(_FN)))
 
