@@ -1,0 +1,33 @@
+{
+  "name": "V11-LGB-b",
+  "created": "2026-08-08",
+  "description": "V11 LGB-b: kotwica 4 + rdzen + zwyciezcy LGB-b (e_volume_delta_imbalance +16.8pp, r_di_spread +12.8, r_cci_20 +11.4) + MAKRO szerokosci (sp500/us10y/btc_dom) + interakcja e_rsi_x_funding (niezmierzona). Prog 0.45. | Poprawka pokrycia: kazda nowa cecha w >=2 modelach.",
+  "models": [
+    "lgb_sniper_6h"
+  ],
+  "feature_mix": {
+    "lgb_sniper_6h": {
+      "remove": [
+        "ema_mid_r",
+        "volume_ratio",
+        "price_position_bb",
+        "bb_bandwidth_pct"
+      ],
+      "add": [
+        "sr_node_strength",
+        "macd_hist",
+        "ema_slow_r",
+        "e_volume_delta_imbalance",
+        "r_di_spread",
+        "r_cci_20",
+        "sp500_chg",
+        "us10y_chg",
+        "btc_dominance_chg",
+        "e_rsi_x_funding",
+        "r_structure_bias"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)",
+  "default_threshold": 0.45
+}

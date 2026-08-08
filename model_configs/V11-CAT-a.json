@@ -1,0 +1,32 @@
+{
+  "name": "V11-CAT-a",
+  "created": "2026-08-08",
+  "description": "V11 CAT-a: kotwica 4 + rdzen CAT (ema_mid_r,price_position_bb) + zwyciezcy V10 (sr_dist_pct +12pp, sr_node_strength +11, ema_fast_r +9.8, e_phantomflow_score +8.9) + MAKRO (vix/us10y) + r_structure_bias (niezmierzona). Usuniete przegrane: x_weekend(-24pp), e_orderblock_strength, e_fvg_size, fib_dist_pct. Prog 0.45.",
+  "models": [
+    "cat_sniper_6h"
+  ],
+  "feature_mix": {
+    "cat_sniper_6h": {
+      "remove": [
+        "momentum",
+        "trend_1d",
+        "trend_4h",
+        "volume_ratio"
+      ],
+      "add": [
+        "rsi",
+        "hour_cos",
+        "sr_node_strength",
+        "sr_dist_pct",
+        "ema_fast_r",
+        "e_phantomflow_score",
+        "vix_chg",
+        "us10y_chg",
+        "r_structure_bias",
+        "x_real_vol_6h"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)",
+  "default_threshold": 0.45
+}

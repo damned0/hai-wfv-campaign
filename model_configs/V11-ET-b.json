@@ -1,0 +1,38 @@
+{
+  "name": "V11-ET-b",
+  "created": "2026-08-08",
+  "description": "V11 ET-b: rdzen derywatow + e_rsi_x_funding + MAKRO ryzyka + r_vwap_distance, r_stoch_rsi (niezmierzone). Prog 0.35. | Poprawka pokrycia: kazda nowa cecha w >=2 modelach.",
+  "models": [
+    "et_sniper_6h"
+  ],
+  "feature_mix": {
+    "et_sniper_6h": {
+      "remove": [
+        "ema_mid_r",
+        "momentum",
+        "trend_1d",
+        "trend_4h",
+        "volume_ratio",
+        "price_position_bb",
+        "bb_bandwidth_pct"
+      ],
+      "add": [
+        "funding_rate",
+        "oi_zscore_30d",
+        "funding_change_24h",
+        "ls_ratio",
+        "ls_ratio_chg_24h",
+        "oi_total_log",
+        "e_rsi_x_funding",
+        "dxy_chg",
+        "gold_chg",
+        "vix_chg",
+        "r_vwap_distance",
+        "r_stoch_rsi",
+        "funding_x_oizscore"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)",
+  "default_threshold": 0.3
+}

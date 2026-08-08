@@ -1,0 +1,33 @@
+{
+  "name": "V11-LGB-a",
+  "created": "2026-08-08",
+  "description": "V11 LGB-a: kotwica 4 + rdzen V10-LGB-a (EMA/ROC: ema_fast_r,x_ema21_over_55,x_roc_4) + MAKRO ryzyka (dxy/gold/vix/oil). Usuniete przegrane V10: x_weekend(-17pp), r_macd_signal_dist. Makro = najsilniejszy sygnal z archiwum, V10 go nie testowal. Prog 0.45 (V10 przy 0.55 dal 1.9 tpd, cel 5-10). | Poprawka pokrycia: kazda nowa cecha w >=2 modelach. | x_roc_24 przeniesione do ET-a (limit 18 cech).",
+  "models": [
+    "lgb_sniper_6h"
+  ],
+  "feature_mix": {
+    "lgb_sniper_6h": {
+      "remove": [
+        "ema_mid_r",
+        "volume_ratio",
+        "price_position_bb",
+        "bb_bandwidth_pct"
+      ],
+      "add": [
+        "sr_node_strength",
+        "macd_hist",
+        "ema_slow_r",
+        "ema_fast_r",
+        "x_ema21_over_55",
+        "x_roc_4",
+        "dxy_chg",
+        "gold_chg",
+        "vix_chg",
+        "oil_wti_chg",
+        "e_atr_pct_x_vol_zscore"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)",
+  "default_threshold": 0.45
+}

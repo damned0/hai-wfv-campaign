@@ -1,0 +1,34 @@
+{
+  "name": "V11-RF-b",
+  "created": "2026-08-08",
+  "description": "V10 garnitur B dla RF: kotwica 4 + WLASNY rdzen 6 + 5 cech do zmierzenia = 15. Rdzenie unikalne per model (dobrane z rozdzielczosci na prawdziwych transakcjach). Kazda z 21 niezmierzonych cech wystepuje w >=2 modelach, zeby odroznic 'cecha slaba' od 'nie pasuje temu modelowi'. Kotwica zostaje, bo configi bez wspolnego rdzenia (divcore) dawaly ZERO transakcji. | V11: prog 0.45 (NIEKALIBROWANY — w odroznieniu od LGB/CAT/XGB/ET, RF nie ma jeszcze zmierzonego rdzenia z prawdziwych transakcji, bo RF-B re-weryfikacji utknal na GH >6h. Ten przebieg jest wlasna kalibracja.",
+  "models": [
+    "rf_sniper_6h"
+  ],
+  "feature_mix": {
+    "rf_sniper_6h": {
+      "remove": [
+        "ema_mid_r",
+        "momentum",
+        "trend_1d",
+        "trend_4h",
+        "price_position_bb",
+        "bb_bandwidth_pct"
+      ],
+      "add": [
+        "taker_buy_ratio",
+        "volume_zscore",
+        "r_volume_zscore_50",
+        "dist_below_liq",
+        "dist_above_liq",
+        "e_orderblock_strength",
+        "e_liquidity_sweep_high",
+        "x_obv_slope_24h",
+        "sr_dist_pct",
+        "vwap_dev"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)",
+  "default_threshold": 0.45
+}

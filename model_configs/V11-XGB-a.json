@@ -1,0 +1,38 @@
+{
+  "name": "V11-XGB-a",
+  "created": "2026-08-08",
+  "description": "V11 XGB-a: kotwica 4 + rdzen XGB (r_momentum_20,oi_change_24h,x_rsi_21/7,r_range_compression,r_atr_zscore_20) + zwyciezcy (x_ema21_over_55 +22pp, r_cci_20) + MAKRO ryzyka + x_real_vol_6h (niezmierzone). Usuniete przegrane: x_real_vol_24h(-18pp), e_ichimoku(-7), x_parkinson(-9). Prog 0.45. | Poprawka pokrycia: kazda nowa cecha w >=2 modelach.",
+  "models": [
+    "xgb_sniper_6h"
+  ],
+  "feature_mix": {
+    "xgb_sniper_6h": {
+      "remove": [
+        "ema_mid_r",
+        "momentum",
+        "trend_1d",
+        "trend_4h",
+        "volume_ratio",
+        "price_position_bb",
+        "bb_bandwidth_pct"
+      ],
+      "add": [
+        "r_momentum_20",
+        "oi_change_24h",
+        "x_rsi_21",
+        "x_rsi_7",
+        "r_range_compression",
+        "r_atr_zscore_20",
+        "x_ema21_over_55",
+        "r_cci_20",
+        "dxy_chg",
+        "gold_chg",
+        "vix_chg",
+        "x_real_vol_6h",
+        "r_vwap_distance"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)",
+  "default_threshold": 0.45
+}

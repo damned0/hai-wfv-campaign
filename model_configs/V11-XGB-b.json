@@ -1,0 +1,37 @@
+{
+  "name": "V11-XGB-b",
+  "created": "2026-08-08",
+  "description": "V11 XGB-b: rdzen XGB + e_volume_delta_imbalance (test krzyzowy z LGB) + MAKRO szerokosci + interakcja e_atr_pct_x_vol_zscore (niezmierzona). Prog 0.45.",
+  "models": [
+    "xgb_sniper_6h"
+  ],
+  "feature_mix": {
+    "xgb_sniper_6h": {
+      "remove": [
+        "ema_mid_r",
+        "momentum",
+        "trend_1d",
+        "trend_4h",
+        "volume_ratio",
+        "price_position_bb",
+        "bb_bandwidth_pct"
+      ],
+      "add": [
+        "r_momentum_20",
+        "oi_change_24h",
+        "x_rsi_21",
+        "x_rsi_7",
+        "r_range_compression",
+        "r_atr_zscore_20",
+        "x_ema21_over_55",
+        "e_volume_delta_imbalance",
+        "sp500_chg",
+        "us10y_chg",
+        "btc_dominance_chg",
+        "e_atr_pct_x_vol_zscore"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)",
+  "default_threshold": 0.45
+}

@@ -1,0 +1,32 @@
+{
+  "name": "V11-CAT-b",
+  "created": "2026-08-08",
+  "description": "V11 CAT-b: rdzen CAT + sr_dist_pct/sr_node_strength + e_volume_delta_imbalance (test krzyzowy) + MAKRO szerokosci + r_stoch_rsi, x_roc_24 (niezmierzone). Prog 0.45.",
+  "models": [
+    "cat_sniper_6h"
+  ],
+  "feature_mix": {
+    "cat_sniper_6h": {
+      "remove": [
+        "momentum",
+        "trend_1d",
+        "trend_4h",
+        "volume_ratio"
+      ],
+      "add": [
+        "rsi",
+        "hour_cos",
+        "sr_node_strength",
+        "sr_dist_pct",
+        "e_volume_delta_imbalance",
+        "btc_dominance_chg",
+        "sp500_chg",
+        "dxy_chg",
+        "r_stoch_rsi",
+        "x_roc_24"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)",
+  "default_threshold": 0.45
+}

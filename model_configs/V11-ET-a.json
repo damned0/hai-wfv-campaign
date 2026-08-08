@@ -1,0 +1,38 @@
+{
+  "name": "V11-ET-a",
+  "created": "2026-08-08",
+  "description": "V11 ET-a: rdzen derywatow ET (funding/oi/ls_ratio) + funding_x_oizscore (niezmierzona interakcja) + MAKRO szerokosci. ET w V10 robil 0.1 tpd @0.55 (martwy) — prog obnizony do 0.35. Prog 0.35. | +x_roc_24 (pokrycie 2 modele: CAT-b, ET-a).",
+  "models": [
+    "et_sniper_6h"
+  ],
+  "feature_mix": {
+    "et_sniper_6h": {
+      "remove": [
+        "ema_mid_r",
+        "momentum",
+        "trend_1d",
+        "trend_4h",
+        "volume_ratio",
+        "price_position_bb",
+        "bb_bandwidth_pct"
+      ],
+      "add": [
+        "funding_rate",
+        "oi_zscore_30d",
+        "funding_change_24h",
+        "ls_ratio",
+        "ls_ratio_chg_24h",
+        "oi_total_log",
+        "funding_x_oizscore",
+        "oil_wti_chg",
+        "sp500_chg",
+        "us10y_chg",
+        "btc_dominance_chg",
+        "x_real_vol_6h",
+        "x_roc_24"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)",
+  "default_threshold": 0.3
+}
