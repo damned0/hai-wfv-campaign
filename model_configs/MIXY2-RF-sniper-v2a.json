@@ -1,0 +1,28 @@
+{
+  "name": "RF-sniper-v2a",
+  "description": "v2 RF-sniper-v2a: core8 + 8 niesprawdzonych = 16 cech. Removed core: ['price_position_bb', 'bb_bandwidth_pct', 'volume_ratio']. 12x45 honest.",
+  "created": "2026-08-07",
+  "models": [
+    "rf_sniper_6h"
+  ],
+  "feature_mix": {
+    "rf_sniper_6h": {
+      "remove": [
+        "price_position_bb",
+        "bb_bandwidth_pct",
+        "volume_ratio"
+      ],
+      "add": [
+        "volume_zscore",
+        "r_volume_zscore_50",
+        "x_obv_slope_24h",
+        "r_vwap_distance",
+        "btc_trend_4h",
+        "vix_chg",
+        "sp500_chg",
+        "taker_buy_ratio"
+      ]
+    }
+  },
+  "expected_weights": "auto"
+}

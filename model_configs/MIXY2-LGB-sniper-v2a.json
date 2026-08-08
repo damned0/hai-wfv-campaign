@@ -1,0 +1,29 @@
+{
+  "name": "LGB-sniper-v2a",
+  "description": "v2 LGB-sniper-v2a: core8 + 9 niesprawdzonych = 17 cech. Removed core: ['price_position_bb', 'bb_bandwidth_pct', 'volume_ratio']. 12x45 honest.",
+  "created": "2026-08-07",
+  "models": [
+    "lgb_sniper_6h"
+  ],
+  "feature_mix": {
+    "lgb_sniper_6h": {
+      "remove": [
+        "price_position_bb",
+        "bb_bandwidth_pct",
+        "volume_ratio"
+      ],
+      "add": [
+        "sp500_chg",
+        "vix_chg",
+        "us10y_chg",
+        "gold_chg",
+        "oil_wti_chg",
+        "dxy_chg",
+        "btc_dominance_chg",
+        "funding_x_oizscore",
+        "oi_total_log"
+      ]
+    }
+  },
+  "expected_weights": "auto"
+}

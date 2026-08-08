@@ -1,0 +1,29 @@
+{
+  "name": "CAT-sniper-v2a",
+  "description": "v2 CAT-sniper-v2a: core8 + 9 niesprawdzonych = 17 cech. Removed core: ['price_position_bb', 'bb_bandwidth_pct', 'volume_ratio']. 12x45 honest.",
+  "created": "2026-08-07",
+  "models": [
+    "cat_sniper_6h"
+  ],
+  "feature_mix": {
+    "cat_sniper_6h": {
+      "remove": [
+        "price_position_bb",
+        "bb_bandwidth_pct",
+        "volume_ratio"
+      ],
+      "add": [
+        "hour_sin",
+        "day_of_week",
+        "rsi",
+        "btc_trend_1h",
+        "btc_trend_4h",
+        "btc_trend_1d",
+        "funding_change_24h",
+        "dist_below_liq",
+        "dist_above_liq"
+      ]
+    }
+  },
+  "expected_weights": "auto"
+}

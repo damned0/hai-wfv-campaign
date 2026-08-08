@@ -1,0 +1,28 @@
+{
+  "name": "XGB-sniper-v2b",
+  "description": "v2 XGB-sniper-v2b: core8 + 8 niesprawdzonych = 16 cech. Removed core: ['price_position_bb', 'bb_bandwidth_pct', 'volume_ratio']. 12x45 honest.",
+  "created": "2026-08-07",
+  "models": [
+    "xgb_sniper_6h"
+  ],
+  "feature_mix": {
+    "xgb_sniper_6h": {
+      "remove": [
+        "price_position_bb",
+        "bb_bandwidth_pct",
+        "volume_ratio"
+      ],
+      "add": [
+        "x_real_vol_6h",
+        "x_btc_leadlag",
+        "x_roc_168",
+        "r_stoch_rsi",
+        "day_of_week",
+        "sr_node_strength",
+        "taker_buy_ratio",
+        "x_ema9_over_21"
+      ]
+    }
+  },
+  "expected_weights": "auto"
+}
