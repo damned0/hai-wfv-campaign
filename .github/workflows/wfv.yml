@@ -86,7 +86,7 @@ jobs:
       - name: upload db
         uses: actions/upload-artifact@v4
         with:
-          name: result-${{ matrix.cfg }}-c${{ matrix.conf }}-${{ matrix.w }}x${{ matrix.wd }}
+          name: result-${{ replace(matrix.cfg, '/', '-') }}-c${{ matrix.conf }}-${{ matrix.w }}x${{ matrix.wd }}
           path: |
             HAI-NL/data/hairesearch.db
             *.log
