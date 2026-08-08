@@ -1,0 +1,30 @@
+{
+  "name": "V10-CAT-a",
+  "created": "2026-08-08",
+  "description": "V10 garnitur A dla CAT: kotwica 4 + WLASNY rdzen 6 + 5 cech do zmierzenia = 15. Rdzenie unikalne per model (dobrane z rozdzielczosci na prawdziwych transakcjach). Kazda z 21 niezmierzonych cech wystepuje w >=2 modelach, zeby odroznic 'cecha slaba' od 'nie pasuje temu modelowi'. Kotwica zostaje, bo configi bez wspolnego rdzenia (divcore) dawaly ZERO transakcji. | Prog startowy 0.55 dla wszystkich (2026-08-08) — do ustalenia per model po pierwszej turze wynikow.",
+  "models": [
+    "cat_sniper_6h"
+  ],
+  "feature_mix": {
+    "cat_sniper_6h": {
+      "remove": [
+        "momentum",
+        "trend_1d",
+        "trend_4h",
+        "volume_ratio"
+      ],
+      "add": [
+        "rsi",
+        "hour_cos",
+        "hour_sin",
+        "e_fvg_size",
+        "e_liquidity_sweep_high",
+        "e_liquidity_sweep_low",
+        "fib_dist_pct",
+        "sr_dist_pct"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)",
+  "default_threshold": 0.55
+}

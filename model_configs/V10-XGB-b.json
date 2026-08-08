@@ -1,0 +1,36 @@
+{
+  "name": "V10-XGB-b",
+  "created": "2026-08-08",
+  "description": "V10 garnitur B dla XGB: kotwica 4 + WLASNY rdzen 6 + 5 cech do zmierzenia = 15. Rdzenie unikalne per model (dobrane z rozdzielczosci na prawdziwych transakcjach). Kazda z 21 niezmierzonych cech wystepuje w >=2 modelach, zeby odroznic 'cecha slaba' od 'nie pasuje temu modelowi'. Kotwica zostaje, bo configi bez wspolnego rdzenia (divcore) dawaly ZERO transakcji. | Prog startowy 0.55 dla wszystkich (2026-08-08) — do ustalenia per model po pierwszej turze wynikow.",
+  "models": [
+    "xgb_sniper_6h"
+  ],
+  "feature_mix": {
+    "xgb_sniper_6h": {
+      "remove": [
+        "ema_mid_r",
+        "momentum",
+        "trend_1d",
+        "trend_4h",
+        "volume_ratio",
+        "price_position_bb",
+        "bb_bandwidth_pct"
+      ],
+      "add": [
+        "r_momentum_20",
+        "oi_change_24h",
+        "x_rsi_21",
+        "x_rsi_7",
+        "r_range_compression",
+        "r_atr_zscore_20",
+        "x_real_vol_24h",
+        "x_ema21_over_55",
+        "e_ichimoku_cloud_thickness",
+        "fib_dist_pct",
+        "r_cci_20"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)",
+  "default_threshold": 0.55
+}
