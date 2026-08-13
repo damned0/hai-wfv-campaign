@@ -62,6 +62,30 @@ except Exception:
 # treningu (nie odpalac kilku ciezkich treningow rownolegle).
 MAX_ENSEMBLE_MODELS = 10
 
+# ── PARYTET Z WALIDATOREM (2026-08-13) ───────────────────────────────────────
+# Te dwa progi byly ZASZYTE w predict() (0.33 i 0.30), podczas gdy walidator
+# (backtester._VOTE_GATE / _DECISION_THRESHOLD) ma je parametryzowalne i
+# hai_wfv.py ustawia je z CLI (--vote-gate / --threshold). Skutek: kampania
+# WFV liczyla ENS-3x-diff przy vote_gate=0.40 i threshold=0.50, a produkcja
+# jechala na 0.33/0.30 — czyli werdykt GO opisywal INNY uklad niz uruchomiony.
+#
+# Domyslne wartosci = DOTYCHCZASOWE ZACHOWANIE LIVE, zeby sama ta zmiana
+# niczego nie przestawila. Zmiana nastepuje dopiero po jawnym ustawieniu env.
+#   HAI_VOTE_GATE        <-> backtester._VOTE_GATE        (glos pojedynczego modelu)
+#   HAI_DECISION_THRESHOLD <-> backtester._DECISION_THRESHOLD (zagregowany wynik)
+def _prog(nazwa: str, domyslny: float) -> float:
+    try:
+        return float(os.environ.get(nazwa, domyslny))
+    except (TypeError, ValueError):
+        logger.warning("%s ma niepoprawna wartosc — uzywam %.2f", nazwa, domyslny)
+        return domyslny
+
+
+VOTE_GATE = _prog("HAI_VOTE_GATE", 0.33)              # modele 3-klasowe
+VOTE_GATE_BIN_HI = _prog("HAI_VOTE_GATE_BIN_HI", 0.52)  # modele binarne: LONG
+VOTE_GATE_BIN_LO = _prog("HAI_VOTE_GATE_BIN_LO", 0.48)  # modele binarne: SHORT
+DECISION_THRESHOLD = _prog("HAI_DECISION_THRESHOLD", 0.30)
+
 # audyt 2026-07-05 (v3, rozszerzona proba): mnozniki policzone z per-model
 # per-regime PF w POLACZONYM trade_log WSZYSTKICH 7 dostepnych backtestow
 # (14010 transakcji z przypisanym regime+dominant_model - znaczaco wieksza
@@ -264,8 +288,9 @@ class NeuralTraderEnsemble:
         cfg_name = os.getenv("HAI_MODEL_CONFIG")
         if not cfg_name:
             return
-        registry = Path("/root/ProjektHAI/model_registry")
-        config_path = Path("/root/ProjektHAI/model_configs") / f"{cfg_name}.json"
+        _root = Path(os.environ.get("HAI_ROOT", "/root/ProjektHAI"))
+        registry = _root / "model_registry"
+        config_path = _root / "model_configs" / f"{cfg_name}.json"
         if not config_path.exists():
             logger.warning(f"HAI_MODEL_CONFIG={cfg_name} ale brak {config_path}")
             return
@@ -303,8 +328,43 @@ class NeuralTraderEnsemble:
                         pass
 
             for model_name in cfg.get("models", []):
-                src = registry / f"{model_name}.pkl"
                 dst = MODELS_DIR / f"{model_name}.pkl"
+                # Kanoniczna nazwa w configu: <algo>_<profil>_<H>[.<variant>] (np. cat_sniper_6h, et_sniper_6h.v1).
+                # Zrodlo: plaski model_registry/<name>.pkl albo zagniezdzony model_registry/gen.SNPR/<H>/...
+                _variant = None
+                if "." in model_name:
+                    model_name, _variant = model_name.split(".", 1)
+                src = registry / f"{model_name}.pkl"
+                if not src.exists():
+                    _h = None
+                    for _part in reversed(model_name.split("_")):
+                        _digits = "".join(ch for ch in _part if ch.isdigit())
+                        if _digits:
+                            _h = int(_digits)
+                            break
+                    _base = model_name
+                    if _h is not None:
+                        _tokens = model_name.split("_")
+                        while _tokens and any(ch.isdigit() for ch in _tokens[-1]):
+                            _tokens.pop()
+                        _base = "_".join(_tokens)
+                    _base = _base.lower()
+                    _hor = _h or 6
+                    # 1) gen.SNPR/<H>/<base>_<H>.<variant>.pkl  (warianty, np. et_sniper_6h.v1)
+                    if _variant:
+                        _cand = registry / "gen.SNPR" / f"{_hor}h" / f"{_base}_{_hor}h.{_variant}.pkl"
+                        if _cand.exists():
+                            src = _cand
+                    # 2) gen.SNPR/<H>/<base>_<H>.pkl
+                    if not src.exists():
+                        _cand = registry / "gen.SNPR" / f"{_hor}h" / f"{_base}_{_hor}h.pkl"
+                        if _cand.exists():
+                            src = _cand
+                    # 3) flat registry/<base>.<variant>.pkl (stare warianty, np. xgb_sniper_deploy.pkl)
+                    if not src.exists() and _variant:
+                        _cand = registry / f"{_base}_{_variant}.pkl"
+                        if _cand.exists():
+                            src = _cand
                 if not src.exists():
                     logger.warning(f"model_registry brak {model_name}.pkl dla configu {cfg_name}")
                     continue
@@ -463,10 +523,10 @@ class NeuralTraderEnsemble:
                         lp = calibrate(_calib, name, lp)
                         sp = calibrate(_calib, name, sp)
                     raw_votes[name] = {"long": lp, "short": sp}
-                    if lp > sp and lp > 0.33:
+                    if lp > sp and lp > VOTE_GATE:
                         pred = "LONG"
                         long_score  += lp * w * SIDE_WEIGHTS.get(name, {}).get("long", 1.0)
-                    elif sp > lp and sp > 0.33:
+                    elif sp > lp and sp > VOTE_GATE:
                         pred = "SHORT"
                         short_score += sp * w * SIDE_WEIGHTS.get(name, {}).get("short", 1.0)
                     else:
@@ -484,10 +544,10 @@ class NeuralTraderEnsemble:
                         from .confidence_calib import calibrate
                         lp = calibrate(_calib, name, lp)
                     raw_votes[name] = {"long": lp, "short": 1.0 - lp}
-                    if lp > 0.52:
+                    if lp > VOTE_GATE_BIN_HI:
                         pred = "LONG"
                         long_score += lp * w * SIDE_WEIGHTS.get(name, {}).get("long", 1.0)
-                    elif lp < 0.48:
+                    elif lp < VOTE_GATE_BIN_LO:
                         pred = "SHORT"
                         short_score += (1 - lp) * w * SIDE_WEIGHTS.get(name, {}).get("short", 1.0)
                     else:
@@ -501,9 +561,9 @@ class NeuralTraderEnsemble:
             except Exception as e:
                 logger.debug(f"Model {name} error: {e}")
 
-        if long_score > 0.30 and long_score > short_score:
+        if long_score > DECISION_THRESHOLD and long_score > short_score:
             action = "LONG"
-        elif short_score > 0.30 and short_score > long_score:
+        elif short_score > DECISION_THRESHOLD and short_score > long_score:
             action = "SHORT"
         else:
             action = "NEUTRAL"

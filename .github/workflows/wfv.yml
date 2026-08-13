@@ -15,6 +15,14 @@ on:
         description: "comma-separated windowsxdays, e.g. 1x365,6x90,12x45 (12x45 = oficjalny walidator od 2026-08-04)"
         required: false
         default: "1x365,6x90,12x45"
+      threshold:
+        description: "prog decyzji (backtester._DECISION_THRESHOLD). MUSI byc rowny HAI_DECISION_THRESHOLD w .env instancji"
+        required: false
+        default: "0.35"
+      vote_gate:
+        description: "prog glosu pojedynczego modelu (backtester._VOTE_GATE). MUSI byc rowny HAI_VOTE_GATE w .env instancji"
+        required: false
+        default: "0.40"
       smoke:
         description: "smoke test only (single fastest combo)"
         type: boolean
@@ -80,9 +88,16 @@ jobs:
           HAI_ROOT: ${{ github.workspace }}
           HAI_INSTANCE_DIR: ${{ github.workspace }}
         run: |
+          # --threshold i --vote-gate dodane 2026-08-13. Wczesniej NIE byly
+          # przekazywane, wiec GH liczyl na domyslnych hai_wfv (0.35/0.40)
+          # niezaleznie od tego, czym jechala produkcja — werdykty opisywaly
+          # inny uklad niz uruchomiony. Teraz musza byc rowne HAI_DECISION_THRESHOLD
+          # i HAI_VOTE_GATE z .env instancji.
           python hai_wfv.py --configs "${{ matrix.cfg }}" \
             --windows "${{ matrix.w }}" --window-days "${{ matrix.wd }}" \
-            --embargo 7 --conf "${{ matrix.conf }}"
+            --embargo 7 --conf "${{ matrix.conf }}" \
+            --threshold "${{ inputs.threshold }}" \
+            --vote-gate "${{ inputs.vote_gate }}"
       - name: upload db
         uses: actions/upload-artifact@v4
         with:

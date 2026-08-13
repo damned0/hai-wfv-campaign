@@ -412,7 +412,13 @@ class AIStrategy(BaseStrategy):
                      funding_rate: float = 0.0, funding_change_24h: float = 0.0,
                      oi_total_log: float = 0.0, oi_change_24h: float = 0.0,
                      oi_zscore_30d: float = 0.0, funding_extreme: float = 0.0,
-                     timestamp: Optional[datetime] = None):
+                     timestamp: Optional[datetime] = None,
+                     # 2026-08-07: bez tych trzech cechy SMC/Ichimoku/VWAP/S-R/
+                     # likwidacji sa None albo 0.0 (engine._ohlc_aux). Domyslne
+                     # None = zachowanie jak dotad, wiec starzy wolajacy dzialaja.
+                     highs_1h: Optional[List] = None,
+                     lows_1h: Optional[List] = None,
+                     timestamps_1h: Optional[List] = None):
         if not prices_1h or len(prices_1h) < self.min_history:
             return 0.0, "NEUTRAL"
         if not self._check_volume(prices_1h, volumes_1h or []):
@@ -436,9 +442,18 @@ class AIStrategy(BaseStrategy):
             return 0.0, "NEUTRAL"
 
         # Próg pewności: reżim + sesja
+        # PARYTET (2026-08-13): korekta reżimu miała tu ODWROTNY ZNAK niż w
+        # walidatorze. backtester.py:1391 robi `_cpre = batch_conf + _radj`,
+        # czyli DODAJE korektę do WYNIKU (dodatnia = łatwiej przejść). Tutaj było
+        # `effective_min_conf = min_confidence + regime_adjust`, czyli dodawanie
+        # do PROGU (dodatnia = TRUDNIEJ przejść). Ten sam słownik
+        # {0: 0.02, 1: 0.00, 2: 0.03}, przeciwny skutek — live był surowszy od
+        # zwalidowanego układu o 0.02–0.03, a przy sesji prime o kolejne 0.03.
+        # Teraz obie ścieżki modyfikują WYNIK; próg zostaje czysty.
         regime_adjust = REGIME_CONF_ADJUST.get(regime, 0.0) or 0.0
         session_adjust = _SESSION_CONF_ADJUST.get(session, 0.0) or 0.0
-        effective_min_conf = self.min_confidence + regime_adjust + session_adjust
+        conf_adjust = regime_adjust + session_adjust
+        effective_min_conf = self.min_confidence
 
         features = build_features_live(
             strategy=self,
@@ -453,6 +468,11 @@ class AIStrategy(BaseStrategy):
             oi_zscore_30d=oi_zscore_30d,
             funding_extreme=funding_extreme,
             timestamp=timestamp,
+            # 2026-08-07 — patrz engine._ohlc_aux
+            highs_1h=highs_1h,
+            lows_1h=lows_1h,
+            symbol=symbol,
+            timestamps_1h=timestamps_1h,
         )
         if not features:
             logger.debug(f"{symbol}: build_features_live zwrocil None")
@@ -502,12 +522,19 @@ class AIStrategy(BaseStrategy):
             (action == "LONG"  and stoch_k < 25 and stoch_d < 25) or
             (action == "SHORT" and stoch_k > 75 and stoch_d > 75)
         )
+        # PARYTET (2026-08-13): korekty reżimu i sesji idą do WYNIKU, nie do progu
+        # — kolejność 1:1 z backtester.py:1390-1396 (najpierw reżim + sesja,
+        # dopiero potem mnożnik stochastyczny, na końcu porównanie z progiem).
+        if conf_adjust:
+            confidence = max(0.0, min(confidence + conf_adjust, 0.99))
+
         if stoch_confirms:
             confidence = min(confidence * 1.08, 0.99)  # +8% przy potwierdzeniu stoch
             logger.debug(f"{symbol}: stochastic confirming {action} (K={stoch_k} D={stoch_d})")
 
         if confidence < effective_min_conf:
-            logger.debug(f"{symbol}: conf={confidence:.3f} < {effective_min_conf:.3f} (regime={regime}) → skip")
+            logger.debug(f"{symbol}: conf={confidence:.3f} (korekta {conf_adjust:+.2f}) "
+                         f"< {effective_min_conf:.3f} (regime={regime}, sesja={session}) → skip")
             return 0.0, "NEUTRAL"
 
         if not self._check_macro_trend(prices_1d, action):
@@ -534,6 +561,12 @@ class AIStrategy(BaseStrategy):
             'oi_change_24h': kwargs.get('oi_change_24h', 0.0),
             'oi_zscore_30d': kwargs.get('oi_zscore_30d', 0.0),
             'funding_extreme': kwargs.get('funding_extreme', 0.0),
+            # 2026-08-07: high/low/timestamp przekazywane przez engine. Bez nich
+            # cechy SMC/Ichimoku/VWAP/S-R/likwidacji byly None albo 0.0 (patrz
+            # engine._ohlc_aux). Brak kluczy = stare zachowanie, nic nie peka.
+            'highs_1h': kwargs.get('highs_1h'),
+            'lows_1h': kwargs.get('lows_1h'),
+            'timestamps_1h': kwargs.get('timestamps_1h'),
         }
 
         score, action = self.score_symbol(symbol, prices, prices_4h, prices_1d, volumes_1h, **deriv)

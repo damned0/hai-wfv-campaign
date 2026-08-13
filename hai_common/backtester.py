@@ -35,6 +35,15 @@ from .strategies.ai_strategy import CONTINUATION_ZONE_LONG, CONTINUATION_ZONE_SH
 # WYLACZONY - zero zmiany istniejacego zachowania backtestu.
 _REGIME_ADAPTIVE_MODE = False
 
+# MULTI-HORIZON (2026-08-08): lgb_multi_horizon jest trenowany na STACKOWANYM
+# zbiorze [4,6,8,16,24,36,48,72] z 'horizon_hours' jako CECHA wejsciowa.
+# Backtester tej cechy nie liczyl -> feat_src.get('horizon_hours', zeros) -> model
+# dostawal ZERA (ten sam wzorzec buga co rptr/x_ naprawiony 2026-08-08). W
+# predykcji sondujemy kazdy horyzont z osobna i uodredniamy prawdopodobienstwo
+# (soft-vote) — to, co model faktycznie widzial w treningu.
+MULTI_HORIZONS = [float(x) for x in os.environ.get(
+    "HAI_MULTI_HORIZONS", "4,6,8,16,24,36,48,72").split(",")]
+
 # Mechanizm glosowania ensemble (audyt 2026-07-06, "testy mechanizmow
 # glosowania") - "weighted" (domyslny, bez zmian) = wazona suma prawdopodobienstw
 # per model + prog 0.40. "majority" = kazdy model oddaje 1 glos (LONG/SHORT/
@@ -480,6 +489,14 @@ _TOP_FEATURES_SNAPSHOT = [
     "ema_mid_r", "sr_node_strength", "trend_1d", "adx_14",
     "ls_ratio", "ls_ratio_chg_24h",
 ]
+
+
+# === OBRONA POZYCJI — zamek zysku (2026-08-08) ==============================
+# HAI_SL_LOCK=1 wlacza; progi w % ZWROTU NA POZYCJI (nie ruchu ceny).
+# Domyslnie 25 -> 10: po osiagnieciu +25% SL ladzie na +10%.
+_SL_LOCK         = os.environ.get("HAI_SL_LOCK") == "1"
+_SL_LOCK_TRIGGER = float(os.environ.get("HAI_SL_LOCK_TRIGGER", "25"))
+_SL_LOCK_AT      = float(os.environ.get("HAI_SL_LOCK_AT", "10"))
 
 
 def _trend_ema_like(closes: np.ndarray) -> np.ndarray:
@@ -1211,7 +1228,21 @@ class Backtester:
                             else:
                                 X_pass_t = X_pass
                             X_sc = sc.transform(X_pass_t) if sc is not None else X_pass_t
-                            proba = model.predict_proba(X_sc)
+                            # MULTI-HORIZON (2026-08-08): cecha 'horizon_hours' nie jest
+                            # liczona w feat_src -> model dostawalby ZERA (bug jak rptr/x_).
+                            # Sondujemy kazdy horyzont i uodredniamy proba (soft-vote).
+                            if 'horizon_hours' in mfeats_t:
+                                _hzi = mfeats_t.index('horizon_hours')
+                                _acc = None
+                                for _hz in MULTI_HORIZONS:
+                                    _Xz = X_pass_t.copy()
+                                    _Xz[:, _hzi] = _hz
+                                    _Xs = sc.transform(_Xz) if sc is not None else _Xz
+                                    _p = model.predict_proba(_Xs)
+                                    _acc = _p if _acc is None else _acc + _p
+                                proba = _acc / len(MULTI_HORIZONS)
+                            else:
+                                proba = model.predict_proba(X_sc)
                 except Exception as _pred_e:
                     logger.debug(f"Predict skip {mname}: {_pred_e}")
                     continue
@@ -1485,6 +1516,40 @@ class Backtester:
                     })
                     open_pos    = None
                     pyramid_pos = None
+
+                # === OBRONA POZYCJI: zamek zysku (2026-08-08, koncept Hauzera) =====
+                # Gdy pozycja osiagnie +TRIGGER% zwrotu, przesun SL na +LOCK%.
+                # Od tego momentu pozycja nie moze wyjsc na minus.
+                #
+                # UWAGA na dzwignie: "+25% na pozycji" to zwrot NA KAPITALE, a ceny
+                # ruszaja sie 5x mniej (base_leverage=5). Stad dzielenie przez
+                # dzwignie — bez tego szukalibysmy 25% ruchu ceny, czyli poziomu,
+                # ktorego prawie nigdy nie ma i mechanizm nie odpalilby sie wcale.
+                # Fee+funding celowo POMINIETE w progu: to ma byc prosty, czytelny
+                # poziom cenowy, a nie ruchomy cel zalezny od czasu trzymania.
+                #
+                # WYLACZONE domyslnie (HAI_SL_LOCK=1 wlacza) — inaczej zmienialoby
+                # wyniki wszystkich dotychczasowych przebiegow i nie dalo sie
+                # porownac A/B.
+                if _SL_LOCK and not open_pos.get("sl_locked"):
+                    _lev = self.base_leverage or 1.0
+                    _trig_move = _SL_LOCK_TRIGGER / 100.0 / _lev
+                    _lock_move = _SL_LOCK_AT / 100.0 / _lev
+                    _e = open_pos["entry_eff"]
+                    if side == "LONG":
+                        if hi >= _e * (1 + _trig_move):
+                            sl_p = max(sl_p, _e * (1 + _lock_move))
+                            open_pos["sl_locked"] = True
+                    else:
+                        if lo <= _e * (1 - _trig_move):
+                            sl_p = min(sl_p, _e * (1 - _lock_move))
+                            open_pos["sl_locked"] = True
+                elif _SL_LOCK and open_pos.get("sl_locked"):
+                    # poziom raz zablokowany obowiazuje do konca zycia pozycji
+                    _e = open_pos["entry_eff"]
+                    _lock_move = _SL_LOCK_AT / 100.0 / (self.base_leverage or 1.0)
+                    sl_p = (max(sl_p, _e * (1 + _lock_move)) if side == "LONG"
+                            else min(sl_p, _e * (1 - _lock_move)))
 
                 if not open_pos.get("partial_closed"):
                     # FAZA 1: pelna pozycja. 50% do TP -> partial close 75% wielkosci.
@@ -1895,7 +1960,7 @@ class Backtester:
         _gl = sum(float(w.get("gross_loss") or 0.0) for w in windows if w["total_trades"] > 0)
         _has_gross = (_gw > 0 or _gl > 0)
         if _has_gross:
-            pooled_pf = float(round(_gw / _gl, 3)) if _gl > 0 else 0.0
+            pooled_pf = float(round(_gw / _gl, 3)) if _gl > 0 else 999.0
         else:
             # Fallback dla starych okien bez gross_win/gross_loss (dane sprzed
             # 2026-08-06): wazenie PF liczba tradow - blizej pooled niz zwykla
@@ -2059,7 +2124,7 @@ class Backtester:
         pnl    = sum(t["pnl_usdt"] for t in trades)
         pf_win = sum(t["pnl_usdt"] for t in trades if t["pnl_usdt"] > 0)
         pf_los = abs(sum(t["pnl_usdt"] for t in trades if t["pnl_usdt"] < 0))
-        pf     = round(pf_win / pf_los, 2) if pf_los > 0 else 0.0
+        pf     = round(pf_win / pf_los, 2) if pf_los > 0 else 999.0
         avg_h  = round(sum(t.get("hours_held", 0) for t in trades) / total, 1)
 
         # Equity curve + max drawdown + circuit breaker days

@@ -101,9 +101,24 @@ SNIPER_FEATURES = [
 # BUG naprawiony 2026-08-04: do tej pory train_window() uzywal SNIPER_FEATURES
 # dla WSZYSTKICH trzech profili — "trend"/"rev" w honest WFV byly bez sensu
 # duplikatem sniper pod inna nazwa (te same cechy, ta sama etykieta fast6h).
+# 2026-08-11: WYCIETE `of_cvd_chg_24h` i `cvd_x_adx` — obie byly MARTWE, nie
+# eksperymentalne. Zmierzone na cache 3.87 mln wierszy:
+#   of_cvd_chg_24h — NIE MA go w datasecie (ml_trainer dokłada tę kolumnę tylko
+#                    pod flagą HAI_LEJEK_CVD=1); w treningu i w live wchodziła
+#                    jako 0.0 przez `features.get(f, 0.0)`
+#   cvd_x_adx      — jest w cache, ale w 100% zer: ml_trainer.py:1120 ustawia
+#                    `cvd_x_adx = 0.0` na sztywno, bo build_dataset nie wczytuje
+#                    orderflow
+# Model trendowy jechał więc realnie na 9 cechach z 11 — i tak było w treningu,
+# w WFV i na produkcji. Cecha stała nie tworzy podziałów w drzewie, więc
+# usunięcie jej nie zmienia predykcji; zmienia tylko to, że deklaracja zgadza
+# się ze stanem faktycznym.
+# Przywrócić dopiero gdy: (1) build_dataset zacznie czytać orderflow,
+# (2) collect_orderflow obejmie więcej niż BTC (ORDERFLOW_SYMBOLS) i nadrobi
+# zaległość — dane 128 symboli stoją na 2026-07-29.
 TREND_FEATURES = [
     "trend_1h", "trend_4h", "trend_1d", "adx_14", "momentum", "rsi_4h",
-    "volume_ratio", "taker_buy_ratio", "atr_pct", "of_cvd_chg_24h", "cvd_x_adx",
+    "volume_ratio", "taker_buy_ratio", "atr_pct",
 ]
 REV_FEATURES = [
     "rsi", "rsi_4h", "ema_mid_r", "ema_slow_r", "price_position_bb",
@@ -339,25 +354,30 @@ def train_window(df_train, models, mt, mix=None):
         # etykieta = label tego horyzontu, horizon_hours = CECHA.
         if profile == "multi":
             frames = []
+            # RAM-safe (2026-08-08): df_train ~3.87M×98 (~3GB) — kopiowanie go
+            # 8× = ~24GB -> OOM na VPS 11GB. Okrawamy do kolumn CECH modelu
+            # (+label), subsamplujemy PER HORYZONT przed concat (suma <= cap).
+            _cap = int(os.environ.get("HAI_MULTI_MAX_ROWS", "4000000"))
+            _per = max(_cap // max(len(horizon), 1), 50000)
+            _madd = set((mix.get(name) or {}).get("add", []))
+            _mrm = set((mix.get(name) or {}).get("remove", []))
+            _want = (set(mt.MODEL_FEATURES.get(core) or []) | _madd | {"timestamp"}) - _mrm
             for h in horizon:
                 lc = label_col(h)
                 if lc not in df_train.columns:
                     continue
-                part = df_train.copy()
+                part = df_train[[c for c in _want if c in df_train.columns] + [lc]].copy()
                 part["horizon_hours"] = float(h)
                 part["label_stacked"] = part[lc]
+                if len(part) > _per:
+                    part = part.sample(n=_per, random_state=42)
                 frames.append(part)
             if not frames:
                 log.warning(f"    {name}: brak etykiet dla {horizon} — POMIJAM")
                 continue
-            df_use = pd.concat(frames, ignore_index=True)
-            # Stacked = 8 kopii datasetu (~16.5M wierszy) — LightGBM na tym
-            # dusil caly shard godzinami. Losowy podprobkowy (stratyfikacja i
-            # tak jest zachowana, bo kazdy horyzont wnosi te sama liczbe wierszy).
-            _cap = int(os.environ.get("HAI_MULTI_MAX_ROWS", "4000000"))
-            if len(df_use) > _cap:
-                df_use = df_use.sample(n=_cap, random_state=42).sort_values("timestamp")
-                log.info(f"    {name}: stacked {len(frames)}x -> subsample {_cap:,} wierszy")
+            df_use = pd.concat(frames, ignore_index=True).sort_values("timestamp")
+            log.info(f"    {name}: stacked {len(frames)}x = {len(df_use):,} wierszy "
+                     f"(cap {_cap:,}, per-horyzont {_per:,})")
             lbl = "label_stacked"
             feats = (mt.MODEL_FEATURES.get(core) or []) + ["horizon_hours"]
         elif profile.startswith("regime"):
