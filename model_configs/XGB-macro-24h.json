@@ -1,0 +1,24 @@
+{
+  "name": "XGB-macro-24h",
+  "created": "2026-08-14",
+  "description": "XGB na klastrze MAKRO/BTC (oi_/btc_/sp500/vix/dxy, 10 cech) @24h — izolowany odpowiednik RF-macro-24h (pod), do porownania algorytm x klaster x horyzont. Zero nakladania z produkcyjnym trio.",
+  "models": [
+    "xgb_h24"
+  ],
+  "feature_mix": {
+    "xgb_h24": {
+      "add": [
+        "oi_zscore_30d",
+        "oi_change_24h",
+        "sp500_chg",
+        "btc_rsi_4h",
+        "vix_chg",
+        "btc_dominance_chg",
+        "dxy_chg",
+        "x_btc_leadlag",
+        "btc_trend_1d",
+        "us10y_chg"
+      ]
+    }
+  }
+}
