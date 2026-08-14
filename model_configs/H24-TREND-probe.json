@@ -1,0 +1,51 @@
+{
+  "name": "H24-TREND-probe",
+  "created": "2026-08-14",
+  "description": "Mapowanie cech per horyzont (2026-08-14): profil TREND (zestaw cech identyczny jak trend_6h w produkcji, bez zmian) przeniesiony na horyzont 24h. Cel: czy ranking cech i jakosc WFV zmienia sie z horyzontem, przy STALYM zestawie cech (izolacja zmiennej horyzont od zmiennej cechy).",
+  "models": [
+    "cat_h24",
+    "lgb_h24",
+    "xgb_h24"
+  ],
+  "feature_mix": {
+    "cat_h24": {
+      "add": [
+        "trend_1h",
+        "trend_4h",
+        "trend_1d",
+        "adx_14",
+        "momentum",
+        "rsi_4h",
+        "volume_ratio",
+        "taker_buy_ratio",
+        "atr_pct"
+      ]
+    },
+    "lgb_h24": {
+      "add": [
+        "trend_1h",
+        "trend_4h",
+        "trend_1d",
+        "adx_14",
+        "momentum",
+        "rsi_4h",
+        "volume_ratio",
+        "taker_buy_ratio",
+        "atr_pct"
+      ]
+    },
+    "xgb_h24": {
+      "add": [
+        "trend_1h",
+        "trend_4h",
+        "trend_1d",
+        "adx_14",
+        "momentum",
+        "rsi_4h",
+        "volume_ratio",
+        "taker_buy_ratio",
+        "atr_pct"
+      ]
+    }
+  }
+}
