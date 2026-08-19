@@ -672,6 +672,21 @@ def main():
     ap.add_argument("--window-days", type=int, default=45)
     ap.add_argument("--embargo", type=int, default=7)
     ap.add_argument("--threshold", type=float, default=0.35)
+    # KOTWICA CZASU (2026-08-19): granice okien liczyly sie od datetime.now()
+    # w chwili URUCHOMIENIA, wiec dwa przebiegi z roznych dni mialy INNE okna.
+    # Zmierzone: baza (17.08 14:16) vs pomiar knotowy (18.08 10:31) = ~20h
+    # przesuniecia; przy ~5 stratach na 314 transakcji wystarczy to, by zmienic
+    # PF o dziesiatki. Bez kotwicy zaden A/B nie jest czysty — dotyczy calej
+    # bazy 99 runow. Domyslnie None = stare zachowanie (wsteczna zgodnosc).
+    ap.add_argument("--anchor", default=None, metavar="RRRR-MM-DD",
+                    help="kotwica czasu dla granic okien (domyslnie: teraz)")
+    # SWEEP PROGOW (2026-08-19): progi dzialaja przy DECYZJI, nie przy treningu
+    # (bt_mod._DECISION_THRESHOLD ustawiane raz, globalnie) — wiec modele sa
+    # IDENTYCZNE dla wszystkich progow. Sweep N progow jako N osobnych przebiegow
+    # to N-krotne powtarzanie tego samego treningu. Zmierzone na podzie: trening
+    # okna 816s, symulacja ~80s. Tutaj: trenuj RAZ, symuluj N razy.
+    ap.add_argument("--threshold-sweep", default=None, metavar="0.20,0.30,...",
+                    help="lista progow decyzji; wyniki jako <config>@t<prog>")
     ap.add_argument("--vote-gate", type=float, default=0.40)
     ap.add_argument("--mode", default="neutral")
     ap.add_argument("--conf", type=float, default=None,
@@ -712,6 +727,11 @@ def main():
 
     bt_mod._DECISION_THRESHOLD = args.threshold
     bt_mod._VOTE_GATE = args.vote_gate
+
+    _SWEEP = None
+    if args.threshold_sweep:
+        _SWEEP = [float(x) for x in args.threshold_sweep.split(",") if x.strip()]
+        log.info(f"SWEEP PROGOW: {_SWEEP} — trening RAZ na okno, symulacja x{len(_SWEEP)}")
     bt_mod._DOCTRINE_FREE = True
 
     # jakie horyzonty w ogóle będą potrzebne
@@ -746,7 +766,11 @@ def main():
                       for ms, _mx in plan.values() for m in ms)
     if need_regime:
         df = add_regime_column(df)
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if args.anchor:
+        now = datetime.strptime(args.anchor, "%Y-%m-%d")
+        log.info(f"KOTWICA CZASU: {now:%Y-%m-%d} (okna liczone od tej daty, nie od teraz)")
+    else:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     run_id = args.run_id or (datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4])
     shard_i, shard_n = (0, 1)
@@ -846,16 +870,31 @@ def main():
                 except Exception:
                     return []
 
-            with ThreadPoolExecutor(max_workers=SIM_WORKERS) as ex:
-                for r in ex.map(_sim, _syms):
-                    trades += r
-            st = backtester._wfv_window_stats(trades)
-            st["window"] = f"W{w+1}"
-            per_window_results[cfg_name].append(st)
-            save_window(run_id, cfg_name, st, cutoff.strftime("%Y-%m-%d"))
-            save_trades(run_id, cfg_name, f"W{w+1}", trades)
-            log.info(f"    [{ci}/{len(plan)}] {cfg_name:24} trades={st.get('total_trades'):<5} "
-                     f"pf={st.get('profit_factor')} sharpe={st.get('sharpe_ratio')}")
+            # SWEEP PROGOW: modele sa juz wytrenowane i wstrzykniete (inject wyzej),
+            # a prog dziala dopiero w run_simulation_ai. Wiec dla kazdego progu
+            # powtarzamy TYLKO symulacje — trening (najdrozszy krok) raz na okno.
+            for _thr in (_SWEEP or [None]):
+                if _thr is not None:
+                    bt_mod._DECISION_THRESHOLD = _thr
+                    _klucz = f"{cfg_name}@t{_thr:g}"
+                else:
+                    _klucz = cfg_name
+
+                trades = []
+                with ThreadPoolExecutor(max_workers=SIM_WORKERS) as ex:
+                    for r in ex.map(_sim, _syms):
+                        trades += r
+                st = backtester._wfv_window_stats(trades)
+                st["window"] = f"W{w+1}"
+                per_window_results.setdefault(_klucz, []).append(st)
+                save_window(run_id, _klucz, st, cutoff.strftime("%Y-%m-%d"))
+                save_trades(run_id, _klucz, f"W{w+1}", trades)
+                log.info(f"    [{ci}/{len(plan)}] {_klucz:28} trades={st.get('total_trades'):<5} "
+                         f"pf={st.get('profit_factor')} sharpe={st.get('sharpe_ratio')}")
+
+            # przywroc bazowy prog, zeby kolejny config nie odziedziczyl ostatniego ze sweepu
+            if _SWEEP:
+                bt_mod._DECISION_THRESHOLD = args.threshold
 
     # Shard liczy tylko czesc okien — zapisuje je jako czastkowe (window_days
     # ujemne = marker "czastkowy"), a werdykt liczy dopiero merge_shards().
@@ -876,7 +915,10 @@ def main():
         if not windows:
             log.warning(f"{cfg_name}: zero okien — brak wyniku")
             continue
-        models = plan[cfg_name][0]  # (models, mix) — wez czysta liste
+        # Klucze sweepu maja postac "<config>@t<prog>" i NIE ma ich w `plan` —
+        # modele bierzemy z configu bazowego (sweep nie zmienia modeli, tylko prog).
+        _baza = cfg_name.split("@t")[0]
+        models = plan[_baza][0]  # (models, mix) — wez czysta liste
         # Holdout firewall: split na dev (starsze okna) i holdout (N najnowszych).
         # W{n}: w=0=najstarsze okno -> holdout = najwyzsze numery okien.
         def _wnum(s):

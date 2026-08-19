@@ -23,6 +23,14 @@ on:
         description: "prog glosu pojedynczego modelu (backtester._VOTE_GATE). MUSI byc rowny HAI_VOTE_GATE w .env instancji"
         required: false
         default: "0.40"
+      anchor:
+        description: "kotwica czasu okien RRRR-MM-DD (puste = teraz). Bez niej dwa przebiegi z roznych dni licza INNE okna."
+        required: false
+        default: ""
+      threshold_sweep:
+        description: "lista progow decyzji, np. 0.20,0.30,0.45 — trening RAZ, symulacja N razy; wyniki jako <config>@t<prog>"
+        required: false
+        default: ""
       smoke:
         description: "smoke test only (single fastest combo)"
         type: boolean
@@ -93,11 +101,16 @@ jobs:
           # niezaleznie od tego, czym jechala produkcja — werdykty opisywaly
           # inny uklad niz uruchomiony. Teraz musza byc rowne HAI_DECISION_THRESHOLD
           # i HAI_VOTE_GATE z .env instancji.
+          # UWAGA: krok dziala z 'bash -e'. Konstrukcja [ -n "" ] && X zwraca 1
+          # przy pustym wejsciu i ZABILABY caly krok — stad jawne if/fi.
+          ARGS=""
+          if [ -n "${{ inputs.anchor }}" ]; then ARGS="$ARGS --anchor ${{ inputs.anchor }}"; fi
+          if [ -n "${{ inputs.threshold_sweep }}" ]; then ARGS="$ARGS --threshold-sweep ${{ inputs.threshold_sweep }}"; fi
           python hai_wfv.py --configs "${{ matrix.cfg }}" \
             --windows "${{ matrix.w }}" --window-days "${{ matrix.wd }}" \
             --embargo 7 --conf "${{ matrix.conf }}" \
             --threshold "${{ inputs.threshold }}" \
-            --vote-gate "${{ inputs.vote_gate }}"
+            --vote-gate "${{ inputs.vote_gate }}" $ARGS
       - name: upload db
         uses: actions/upload-artifact@v4
         with:
