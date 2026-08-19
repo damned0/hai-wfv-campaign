@@ -1,0 +1,23 @@
+{
+ "name": "SOLO-xgb-trend4",
+ "created": "2026-08-19",
+ "description": "Kampania 2026-08-19 (GH, LGB/XGB/CAT — RF/ET juz zbadane na podzie 2026-08-18, PF~1.0/martwe wyniki poza ensemble). Ten sam klaster cech i horyzont co pod, inny rdzen — sprawdza czy LGB/XGB/CAT wydobywaja przewage z tych samych cech, ktorej RF/ET nie widzialy. Horyzont dobrany tempem zaniku sygnalu (mapa_cech_horyzont.csv), nie sila na 4h. Klaster: trend dlugi/OBV @4h.",
+ "models": [
+  "xgb_h4_trend4"
+ ],
+ "feature_mix": {
+  "xgb_h4_trend4": {
+   "add": [
+    "x_ema21_over_55",
+    "x_ema50_over_200",
+    "x_obv_slope_24h",
+    "r_momentum_20",
+    "r_structure_bias",
+    "r_vwap_distance",
+    "macd_hist",
+    "r_macd_signal_dist"
+   ],
+   "remove": []
+  }
+ }
+}

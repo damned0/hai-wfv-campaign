@@ -494,6 +494,38 @@ _TOP_FEATURES_SNAPSHOT = [
 # === OBRONA POZYCJI — zamek zysku (2026-08-08) ==============================
 # HAI_SL_LOCK=1 wlacza; progi w % ZWROTU NA POZYCJI (nie ruchu ceny).
 # Domyslnie 25 -> 10: po osiagnieciu +25% SL ladzie na +10%.
+# === POMIAR OBCIAZENIA KNOTOWEGO (2026-08-18) ===============================
+# HAI_EXIT_ON_CLOSE=1 sprawia, ze warunki wyjscia (TP50/TP75/SL/trailing/zamek)
+# sprawdzaja sie na CLOSE swiecy zamiast na high/low.
+#
+# Po co: walidator widzi kazdy knot w obrebie godziny (`hi >= tp50_p`), a zywy
+# engine porownuje `pnl_pct` na BIEZACEJ cenie w petli co 15-300 s
+# (engine.py:299) — knot miedzy odczytami jest dla niego niewidzialny.
+#
+# WYNIK POMIARU (2026-08-18, ENS-5x-horyzont, honest 12x45, pod 256 rdzeni):
+#   knoty : PF 112.65  minPF 10.32  DD 0.20%  WR 98.4%  26 tr/okno
+#   close : PF  49.02  minPF  5.33  DD 0.60%  WR 98.0%  25 tr/okno
+#
+# HIPOTEZA BYLA BLEDNA. Zakladalem asymetrie dzialajaca w jedna strone
+# (knoty zawyzaja WR i PF). Pomiar pokazuje co innego: WR praktycznie sie NIE
+# ZMIENIA (98.4% -> 98.0%), a efekt na okna jest DWUKIERUNKOWY — W4 spadlo
+# 999->12.98 i W9 999->5.33, ale W10 wzroslo 110.63->999 i W12 49.08->999.
+# Straty nie znikaja ani nie przybywaja systematycznie, tylko przesuwaja sie
+# miedzy oknami.
+#
+# Co z tego naprawde wynika: przy 314 transakcjach i ~5 stratach w calym
+# przebiegu PF jest zdominowane przez garstke zdarzen — 112 kontra 49 to nie
+# dwie rozne jakosci strategii, tylko ta sama strategia z 5 kontra 8 stratami.
+# Trzycyfrowe PF w tym rezimie nie jest miara precyzji i nie nadaje sie do
+# porownywania configow. To NIE tlumaczy rozjazdu z live (WR 47.6% na 21
+# transakcjach) — przyczyny trzeba szukac gdzie indziej.
+#
+# Domyslnie WYLACZONE — wlaczenie zmienia wyniki wszystkich przebiegow, wiec
+# sluzy do pomiaru A/B, nie do produkcji. Nie dotyka ATR ani odleglosci TP/SL
+# (te licza sie w _precompute_indicators z surowych swiec) — zmienia wylacznie
+# ROZDZIELCZOSC POMIARU trafienia.
+_EXIT_ON_CLOSE   = os.environ.get("HAI_EXIT_ON_CLOSE") == "1"
+
 _SL_LOCK         = os.environ.get("HAI_SL_LOCK") == "1"
 _SL_LOCK_TRIGGER = float(os.environ.get("HAI_SL_LOCK_TRIGGER", "25"))
 _SL_LOCK_AT      = float(os.environ.get("HAI_SL_LOCK_AT", "10"))
@@ -1410,8 +1442,11 @@ class Backtester:
             ts_ms   = int(times_1h[i])  # np.int64 -> python int (audyt 2026-07-04,
                                          # inaczej trade_log psul json.dumps bez default=str)
             cur_day = date_arr[i]
-            hi      = hi_arr[i]
-            lo      = lo_arr[i]
+            # przy HAI_EXIT_ON_CLOSE knoty znikaja — patrz komentarz przy
+            # _EXIT_ON_CLOSE. Kazde ponizsze `hi >=` / `lo <=` staje sie
+            # porownaniem z cena zamkniecia, czyli tym, co widzi zywy engine.
+            hi      = cur if _EXIT_ON_CLOSE else hi_arr[i]
+            lo      = cur if _EXIT_ON_CLOSE else lo_arr[i]
 
             if cur_day != daily_reset_day:
                 daily_pnl = 0.0
