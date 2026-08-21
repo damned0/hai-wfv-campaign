@@ -407,6 +407,64 @@ class AIStrategy(BaseStrategy):
             return side == "SHORT"
         return True
 
+    def diagnoza_bramek(self, symbol, prices_1h, prices_4h, prices_1d, volumes_1h,
+                        features, akcja, pewnosc, regime=None, timestamp=None):
+        """Zwraca stan KAZDEJ bramki dla podanego sygnalu — do podgladu w panelu.
+
+        WAZNE: wola DOKLADNIE te same metody co score_symbol (_check_volume,
+        _check_doctrine_zone, _check_bb_width, _calc_adx_closes, _check_macro_trend).
+        Zadnej kopii logiki — inaczej panel i handel rozjechalyby sie po pierwszej
+        zmianie progu, co w tym projekcie zdarzylo sie juz wielokrotnie
+        (ADX liczony dwa razy, _filters w ctrl.py, piramidowanie).
+
+        Kolejnosc 1:1 z score_symbol. Zwraca liste slownikow:
+          {nazwa, ok, opis} — ok=None gdy bramka nieaktywna (np. doktryna
+          przy doctrine_free=1).
+        """
+        b = []
+
+        def _dod(n, ok, o):
+            # _check_* zwracaja czasem numpy.bool_, ktorego FastAPI nie umie
+            # zserializowac ("'numpy.bool' object is not iterable"). Rzutujemy
+            # na czysty bool; None zostaje None (bramka nieaktywna).
+            b.append({"nazwa": n, "ok": None if ok is None else bool(ok), "opis": str(o)})
+
+        _dod("historia", len(prices_1h) >= self.min_history,
+             f"{len(prices_1h)}/{self.min_history} swiec")
+        _dod("wolumen", self._check_volume(prices_1h, volumes_1h or []), "filtr plynnosci")
+
+        sesja = self._get_session(timestamp)
+        _dod("sesja", sesja != "dead", f"{sesja}" + (" (22-01 UTC = blok)" if sesja == "dead" else ""))
+
+        _dod("kierunek ensembla", akcja in ("LONG", "SHORT"),
+             f"{akcja} conf={pewnosc:.3f}")
+
+        if getattr(self, "doctrine_free", False):
+            _dod("doktryna BB", None, "pominieta (STRATEGY_DOCTRINE_FREE=1)")
+        elif akcja in ("LONG", "SHORT"):
+            _dod("doktryna BB", self._check_doctrine_zone(features, akcja, regime),
+                 f"bb_pos={features.get('price_position_bb', 0):.2f} regime={regime}")
+
+        try:
+            import numpy as _np
+            _a = _np.asarray(prices_1h[-20:], dtype=float)
+            _bw = round(4 * _a.std() / _a.mean() * 100, 1) if _a.mean() > 0 else 0
+        except Exception:
+            _bw = 0
+        _dod("szerokosc BB", self._check_bb_width(prices_1h),
+             f"{_bw}% (max {BB_WIDTH_MAX_PCT*100:.0f}%)")
+
+        _adx = self._calc_adx_closes(prices_1h, period=14)
+        _dod("ADX", _adx >= ADX_MIN, f"{_adx:.1f} (min {ADX_MIN})")
+
+        _dod("prog pewnosci", pewnosc >= self.min_confidence,
+             f"{pewnosc:.3f} (min {self.min_confidence:.2f})")
+
+        if akcja in ("LONG", "SHORT"):
+            _dod("trend makro", self._check_macro_trend(prices_1d, akcja), "zgodnosc z 1d")
+
+        return b
+
     def score_symbol(self, symbol: str, prices_1h: List, prices_4h: List,
                      prices_1d: List, volumes_1h: List = None,
                      funding_rate: float = 0.0, funding_change_24h: float = 0.0,
