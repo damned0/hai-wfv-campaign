@@ -91,6 +91,15 @@ jobs:
           sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
           echo "shell find count: $(find /root/ProjektHAI/data_warehouse/ohlcv/binance/1h -name '*.parquet' | wc -l)"
           python3 -c "from pathlib import Path; p = Path('/root/ProjektHAI/data_warehouse/ohlcv/binance'); files = list((p/'1h').glob('*.parquet')); print('exists:', p.exists(), '| python glob count:', len(files), '| BTC:', (p/'1h'/'BTC.parquet').exists())"
+      - name: policz cechy korelacji BTC-alt
+        run: |
+          # Cechy licza sie WYLACZNIE z OHLCV, ktore repo juz ma — wiec nie
+          # wysylamy 216 MB gotowych parquetow, tylko generujemy je na miejscu.
+          # Sciezki w skrypcie sa bezwzgledne (/root/ProjektHAI/...), a krok
+          # "shim" wyzej tworzy tam dowiazanie do katalogu roboczego.
+          python data_warehouse/licz_korelacje_btc.py
+          ls data_warehouse/korelacje_btc/*.parquet | wc -l
+
       - name: run WFV combo
         env:
           HAI_ROOT: ${{ github.workspace }}

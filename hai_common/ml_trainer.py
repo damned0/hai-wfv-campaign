@@ -960,6 +960,23 @@ def load_symbol_data(symbol: str) -> Optional[Dict]:
         else:
             out['ls'] = None
 
+        # KORELACJA Z BTC (2026-08-21) — per symbol, godzinowa, liczona wstecznie
+        # przez data_warehouse/licz_korelacje_btc.py. Magazyn mial cechy opisujace
+        # SAM BTC (btc_trend_*, btc_rsi_4h), ale ani jednej opisujacej ZWIAZEK
+        # alta z BTC. Brak pliku = cechy neutralne (0.0), nie blad — nie kazdy
+        # symbol musi je miec, a BTC nie ma ich z definicji.
+        try:
+            _kp = WH_BASE.parent.parent / 'korelacje_btc' / f'{symbol}.parquet'
+            if _kp.exists():
+                _kdf = pd.read_parquet(_kp)
+                _kdf['timestamp'] = pd.to_datetime(_kdf['timestamp'])
+                out['korelacje'] = _kdf.sort_values('timestamp').reset_index(drop=True)
+            else:
+                out['korelacje'] = None
+        except Exception as _ke:
+            logger.warning(f'{symbol}: korelacje_btc nie wczytane ({_ke}) — cechy beda 0.0')
+            out['korelacje'] = None
+
         # Fear & Greed Index (globalny, cache'owany raz - audyt 2026-07-04)
         out['fear_greed'] = _load_fear_greed()
         # BTC context (globalny, cache'owany raz - audyt 2026-07-04)
@@ -1066,6 +1083,16 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
         taker_times = None
         taker_ratio_arr = None
         has_taker = False
+
+    KOREL_KOL = ['btc_corr_24h', 'btc_corr_72h', 'btc_corr_change',
+                 'btc_beta_72h', 'rel_strength_btc', 'corr_breakdown']
+    df_kor = data.get('korelacje')
+    if df_kor is not None and len(df_kor) > 0:
+        kor_times = df_kor['timestamp'].values
+        kor_arr = {k: df_kor[k].values.astype(np.float64) for k in KOREL_KOL if k in df_kor.columns}
+        has_kor = len(kor_arr) == len(KOREL_KOL)
+    else:
+        kor_times, kor_arr, has_kor = None, {}, False
 
     df_ls = data.get('ls')
     if df_ls is not None and len(df_ls) > 0:
@@ -1205,6 +1232,32 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
         else:
             ls_ratio = 1.0
             ls_ratio_chg_24h = 0.0
+
+        # === KORELACJA Z BTC (searchsorted jak ls/taker; dane GODZINOWE, wiec
+        # bez ryzyka stempla wstecznego — w odroznieniu od macro/fear_greed/OI,
+        # ktore byly dzienne i wszystkie trzy mialy przeciek).
+        # Neutralne wartosci gdy brak: korelacja 0 (brak sprzezenia), beta 1
+        # (porusza sie jak BTC), sila relatywna 0, flaga 0. ===
+        if has_kor:
+            _ki = np.searchsorted(kor_times, ts, side='right') - 1
+            if _ki >= 0:
+                def _kv(nazwa, dom):
+                    v = kor_arr[nazwa][_ki]
+                    return float(v) if np.isfinite(v) else dom
+                btc_corr_24h = _kv('btc_corr_24h', 0.0)
+                btc_corr_72h = _kv('btc_corr_72h', 0.0)
+                btc_corr_change = _kv('btc_corr_change', 0.0)
+                btc_beta_72h = _kv('btc_beta_72h', 1.0)
+                rel_strength_btc = _kv('rel_strength_btc', 0.0)
+                corr_breakdown = _kv('corr_breakdown', 0.0)
+            else:
+                btc_corr_24h = btc_corr_72h = btc_corr_change = 0.0
+                btc_beta_72h = 1.0
+                rel_strength_btc = corr_breakdown = 0.0
+        else:
+            btc_corr_24h = btc_corr_72h = btc_corr_change = 0.0
+            btc_beta_72h = 1.0
+            rel_strength_btc = corr_breakdown = 0.0
 
         # === FEAR & GREED INDEX (searchsorted, dzienny - audyt 2026-07-04) ===
         if has_fg:
@@ -1391,6 +1444,12 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
              'x_btc_leadlag': float(macro_vals['btc_dominance']) - float(momentum),
              'cvd_x_adx': float(cvd_x_adx),
             # Fear & Greed Index (audyt 2026-07-04, pelna historia 2018-dzis)
+            'btc_corr_24h': btc_corr_24h,
+            'btc_corr_72h': btc_corr_72h,
+            'btc_corr_change': btc_corr_change,
+            'btc_beta_72h': btc_beta_72h,
+            'rel_strength_btc': rel_strength_btc,
+            'corr_breakdown': corr_breakdown,
             'fear_greed': float(fear_greed),
             # BTC context (audyt 2026-07-04, korelacja altcoinow z BTC 0.6-0.85)
             'btc_trend_1h': float(btc_trend_1h),

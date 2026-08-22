@@ -1,0 +1,72 @@
+{
+ "name": "P5-ENS-3x-korel",
+ "created": "2026-08-22",
+ "description": "Kampania 2026-08-22 na CZYSTEJ mapie — cache przebudowany po naprawie przecieku open_interest (2026-08-21). W poprzedniej mapie oi_zscore_30d miala sile 0.883 i byla kotwica wszystkich modeli P4; po naprawie 0.242 (-73%), wiec wypadla z czolowki. Nowe kotwice: rsi_4h, btc_rsi_4h, rsi_1d, r_htf_trend_4h, x_rsi_21. Bez histgb (najslabsze ogniwo P4: PF 1.19, WR 53.4%, 3/12 okien ujemnych). WARIANT Z KORELACJAMI: kazdy model dostaje dodatkowo rel_strength_btc (d=0.399, mocniejsza niz naprawiona oi_zscore_30d) i btc_corr_24h (0.265). Para z P5-ENS-3x izoluje ICH wklad — poza nimi configi sa identyczne.",
+ "models": [
+  "lgb_h6",
+  "xgb_h16",
+  "cat_h24"
+ ],
+ "feature_mix": {
+  "lgb_h6": {
+   "add": [
+    "rsi_4h",
+    "btc_rsi_4h",
+    "rsi_1d",
+    "r_htf_trend_4h",
+    "trend_4h",
+    "r_di_spread",
+    "x_rsi_21",
+    "rsi",
+    "x_rsi_7",
+    "x_ema9_over_21",
+    "ema_mid_r",
+    "trend_1h",
+    "r_cci_20",
+    "r_vwap_distance",
+    "vwap_dev",
+    "rel_strength_btc",
+    "btc_corr_24h"
+   ],
+   "remove": []
+  },
+  "xgb_h16": {
+   "add": [
+    "rsi_4h",
+    "btc_rsi_4h",
+    "rsi_1d",
+    "r_htf_trend_4h",
+    "trend_4h",
+    "btc_trend_1d",
+    "x_real_vol_6h",
+    "fib_dist_pct",
+    "btc_corr_change",
+    "adx_14",
+    "e_ichimoku_cloud_thickness",
+    "hour_cos",
+    "hour_sin",
+    "rel_strength_btc",
+    "btc_corr_24h"
+   ],
+   "remove": []
+  },
+  "cat_h24": {
+   "add": [
+    "rsi_4h",
+    "btc_rsi_4h",
+    "rsi_1d",
+    "r_htf_trend_4h",
+    "trend_4h",
+    "x_btc_leadlag",
+    "ls_ratio_chg_24h",
+    "volume_zscore",
+    "e_atr_pct_x_vol_zscore",
+    "sr_node_strength",
+    "volume_ratio",
+    "rel_strength_btc",
+    "btc_corr_24h"
+   ],
+   "remove": []
+  }
+ }
+}
