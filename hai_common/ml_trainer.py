@@ -977,6 +977,25 @@ def load_symbol_data(symbol: str) -> Optional[Dict]:
             logger.warning(f'{symbol}: korelacje_btc nie wczytane ({_ke}) — cechy beda 0.0')
             out['korelacje'] = None
 
+        # CECHY CVD (2026-08-24) — order flow, znormalizowany PER SYMBOL.
+        # Magazyn mial te dane od zawsze (orderflow/binance/, 128 symboli,
+        # godzinowe), ale ml_trainer nigdy po nie nie siegal: cvd_x_adx bylo
+        # przypisane ZEREM na sztywno. Normalizacja jest tu kluczowa — surowe
+        # of_cvd_chg_24h daje 0.527 na samym BTC, ale tylko 0.017 na calym
+        # uniwersum, bo CVD jest w jednostkach bezwzglednych i skale sie nie
+        # zgadzaja miedzy coinami. Po z-score: 0.351.
+        try:
+            _cp = WH_BASE.parent.parent / 'cechy_cvd' / f'{symbol}.parquet'
+            if _cp.exists():
+                _cdf = pd.read_parquet(_cp)
+                _cdf['timestamp'] = pd.to_datetime(_cdf['timestamp'])
+                out['cvd'] = _cdf.sort_values('timestamp').reset_index(drop=True)
+            else:
+                out['cvd'] = None
+        except Exception as _ce:
+            logger.warning(f'{symbol}: cechy_cvd nie wczytane ({_ce}) — beda neutralne')
+            out['cvd'] = None
+
         # CECHY PRZEKROJOWE (2026-08-23) — zdarzenia i pozycja na tle rynku,
         # zamiast rolling korelacji (ta okazala sie bezuzyteczna, patrz
         # raporty/korebtc.txt i kampania P5). Liczone przez
@@ -1101,6 +1120,15 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
         taker_ratio_arr = None
         has_taker = False
 
+    CVD_KOL = ['cvd_z6', 'cvd_z24', 'delta_pct_ma6']
+    df_cvd = data.get('cvd')
+    if df_cvd is not None and len(df_cvd) > 0:
+        cvd_times = df_cvd['timestamp'].values
+        cvd_arr = {k: df_cvd[k].values.astype(np.float64) for k in CVD_KOL if k in df_cvd.columns}
+        has_cvd = len(cvd_arr) == len(CVD_KOL)
+    else:
+        cvd_times, cvd_arr, has_cvd = None, {}, False
+
     PRZEKR_KOL = ['resid_ret_4h', 'resid_ret_24h', 'rank_mom_24h',
                   'rank_vol_chg', 'event_dekorelacji']
     df_prz = data.get('przekrojowe')
@@ -1171,8 +1199,11 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
         # Momentum (10-bar RoC)
         momentum = (cur / closes[i - 10] - 1) * 100 if i >= 10 else 0
 
-        # CVD x ADX (orderflow; parytet lejek_of_cvd HAI_LEJEK_CVD). W cache WFV
-        # brak orderflow w data-dict -> 0.0 domyslnie (MIX-CXL-rev12 dostaje 0).
+        # CVD x ADX — wartosc nadawana nizej, w bloku CECHY CVD (potrzebuje
+        # adx_14, liczonego dopiero w tej petli). Do 2026-08-24 zostawala
+        # ZEREM na sztywno: HAI_LEJEK_CVD dodawal ja do list cech RF/CAT/MIX,
+        # wiec modele dostawaly kolumne stalej zerowej i nie mogl tego nikt
+        # zauwazyc — zerowa wariancja nie rzuca bledem, po prostu nic nie wnosi.
         cvd_x_adx = 0.0
 
         # === VOLUME FEATURES ===
@@ -1282,6 +1313,27 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
             resid_ret_4h = resid_ret_24h = 0.0
             rank_mom_24h = rank_vol_chg = 0.5
             event_dekorelacji = 0.0
+
+        # === CECHY CVD (searchsorted; dane godzinowe, bez ryzyka stempla).
+        # Neutralne przy braku: z-score 0 (przeplyw jak zwykle), delta_pct 0
+        # (rownowaga kupno/sprzedaz). Backfill orderflow siega 2026-07-27,
+        # wiec najswiezsze okno moze miec luke — wtedy wpada neutralne 0. ===
+        if has_cvd:
+            _ci = np.searchsorted(cvd_times, ts, side='right') - 1
+            if _ci >= 0:
+                def _cv(nazwa):
+                    v = cvd_arr[nazwa][_ci]
+                    return float(v) if np.isfinite(v) else 0.0
+                cvd_z6 = _cv('cvd_z6')
+                cvd_z24 = _cv('cvd_z24')
+                delta_pct_ma6 = _cv('delta_pct_ma6')
+            else:
+                cvd_z6 = cvd_z24 = delta_pct_ma6 = 0.0
+        else:
+            cvd_z6 = cvd_z24 = delta_pct_ma6 = 0.0
+        # przeplyw wazony sila trendu: napor kupujacych liczy sie inaczej
+        # w trendzie niz w konsolidacji. Skala ADX/25 ~ 1.0 przy progu bramki.
+        cvd_x_adx = cvd_z24 * (adx_14 / 25.0)
 
         # === KORELACJA Z BTC (searchsorted jak ls/taker; dane GODZINOWE, wiec
         # bez ryzyka stempla wstecznego — w odroznieniu od macro/fear_greed/OI,
@@ -1494,6 +1546,9 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
              'x_btc_leadlag': float(macro_vals['btc_dominance']) - float(momentum),
              'cvd_x_adx': float(cvd_x_adx),
             # Fear & Greed Index (audyt 2026-07-04, pelna historia 2018-dzis)
+            'cvd_z6': cvd_z6,
+            'cvd_z24': cvd_z24,
+            'delta_pct_ma6': delta_pct_ma6,
             'resid_ret_4h': resid_ret_4h,
             'resid_ret_24h': resid_ret_24h,
             'rank_mom_24h': rank_mom_24h,

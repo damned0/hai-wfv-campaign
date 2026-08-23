@@ -1,0 +1,86 @@
+{
+ "name": "P7-ENS-3x-cvd",
+ "created": "2026-08-24",
+ "description": "Kampania 2026-08-24: order flow (CVD) znormalizowany PER SYMBOL. Magazyn mial te dane od 2023-07 dla 128 symboli, ale ml_trainer nigdy po nie nie siegal — cvd_x_adx bylo przypisane zerem na sztywno, a of_cvd_chg_24h w ogole nie istnialo w cache, wiec flaga HAI_LEJEK_CVD karmila modele stala. Kluczowa jest normalizacja: surowe of_cvd_chg_24h daje sile 0.527 zmierzona na SAMYM BTC, ale tylko 0.017 na calym uniwersum — of_cvd jest skumulowane w jednostkach bezwzglednych, wiec skale BTC i altow sa nieporownywalne i sygnal sie znosi. Po z-score rolling 200h per symbol: cvd_z24 0.351, cvd_z6 0.333, delta_pct_ma6 0.295 (odniesienie: rel_strength_btc 0.399, oi_zscore_30d 0.242). Para z P6-ENS-3x-przekroj izoluje wklad CVD — poza trzema cechami identyczne.",
+ "models": [
+  "lgb_h6",
+  "xgb_h16",
+  "cat_h24"
+ ],
+ "feature_mix": {
+  "lgb_h6": {
+   "add": [
+    "rsi_4h",
+    "btc_rsi_4h",
+    "rsi_1d",
+    "r_htf_trend_4h",
+    "trend_4h",
+    "r_di_spread",
+    "x_rsi_21",
+    "rsi",
+    "x_rsi_7",
+    "x_ema9_over_21",
+    "ema_mid_r",
+    "trend_1h",
+    "r_cci_20",
+    "r_vwap_distance",
+    "vwap_dev",
+    "resid_ret_24h",
+    "rank_mom_24h",
+    "rank_vol_chg",
+    "event_dekorelacji",
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6"
+   ],
+   "remove": []
+  },
+  "xgb_h16": {
+   "add": [
+    "rsi_4h",
+    "btc_rsi_4h",
+    "rsi_1d",
+    "r_htf_trend_4h",
+    "trend_4h",
+    "btc_trend_1d",
+    "x_real_vol_6h",
+    "fib_dist_pct",
+    "adx_14",
+    "e_ichimoku_cloud_thickness",
+    "hour_cos",
+    "hour_sin",
+    "resid_ret_24h",
+    "rank_mom_24h",
+    "rank_vol_chg",
+    "event_dekorelacji",
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6"
+   ],
+   "remove": []
+  },
+  "cat_h24": {
+   "add": [
+    "rsi_4h",
+    "btc_rsi_4h",
+    "rsi_1d",
+    "r_htf_trend_4h",
+    "trend_4h",
+    "x_btc_leadlag",
+    "ls_ratio_chg_24h",
+    "volume_zscore",
+    "e_atr_pct_x_vol_zscore",
+    "sr_node_strength",
+    "volume_ratio",
+    "resid_ret_24h",
+    "rank_mom_24h",
+    "rank_vol_chg",
+    "event_dekorelacji",
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6"
+   ],
+   "remove": []
+  }
+ }
+}

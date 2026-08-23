@@ -109,6 +109,14 @@ jobs:
           python data_warehouse/licz_cechy_przekrojowe.py
           ls data_warehouse/cechy_przekrojowe/*.parquet | wc -l
 
+      - name: policz cechy CVD (order flow, z-score per symbol)
+        run: |
+          # Liczone na runnerze z data_warehouse/orderflow, ktory repo juz
+          # wozi (93 MB, 128 symboli) — taniej niz wysylanie 55 MB gotowych
+          # cech przy kazdej zmianie. Ten sam wzorzec co korelacje/przekrojowe.
+          python data_warehouse/licz_cechy_cvd.py
+          ls data_warehouse/cechy_cvd/*.parquet | wc -l
+
       - name: run WFV combo
         env:
           HAI_ROOT: ${{ github.workspace }}
