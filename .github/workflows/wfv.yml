@@ -100,6 +100,11 @@ jobs:
           python data_warehouse/licz_korelacje_btc.py
           ls data_warehouse/korelacje_btc/*.parquet | wc -l
 
+      - name: policz cechy przekrojowe (zdarzenia + ranking rynku)
+        run: |
+          python data_warehouse/licz_cechy_przekrojowe.py
+          ls data_warehouse/cechy_przekrojowe/*.parquet | wc -l
+
       - name: run WFV combo
         env:
           HAI_ROOT: ${{ github.workspace }}

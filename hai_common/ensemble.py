@@ -582,7 +582,17 @@ class NeuralTraderEnsemble:
                     if meta_score < _cfg.META_LABEL_THRESHOLD:
                         action = "NEUTRAL"
                 except Exception as e:
-                    logger.debug(f"meta_label score error: {e}")
+                    # FIX 2026-08-23: bylo logger.debug — czyli poziom, ktorego
+                    # w produkcji nie widac. Skutek: przy wlaczonej fladze
+                    # META_LABEL_ENABLED filtr moglby NIE DZIALAC, a system
+                    # raportowalby, ze dziala. Dokladnie tak "zamknieto" w lipcu
+                    # meta-labeling jako nieskuteczny — kampania nigdy go nie
+                    # uruchomila, a nikt tego nie zobaczyl (RAPORT_GRANDKAMPANIA:1066).
+                    # FAIL-CLOSED: skoro filtr mial ta transakcje ocenic i nie
+                    # zdolal, bezpieczniej jej NIE brac niz wpuscic nieocenzona.
+                    logger.error(f"meta_label score error: {e} — transakcja ODRZUCONA "
+                                 f"(fail-closed), sprawdz meta_label.pkl", exc_info=True)
+                    action = "NEUTRAL"
 
         result = {
             "action": action,

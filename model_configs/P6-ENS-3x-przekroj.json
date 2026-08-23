@@ -1,0 +1,77 @@
+{
+ "name": "P6-ENS-3x-przekroj",
+ "created": "2026-08-23",
+ "description": "Kampania 2026-08-23: cechy ZDARZENIOWE i PRZEKROJOWE zamiast rolling korelacji. Podstawa: raporty/korebtc.txt — korelacja jest opozniona i szumna, a modele widza BTC przez btc_trend_*/btc_rsi_4h. Kampania P5 to potwierdzila: btc_corr_* nie wnioslo nic w zadnej z 3 rol. Tu inna klasa sygnalu: resid_ret_24h (momentum po odjeciu tego, co tlumaczy beta*BTC), rank_mom_24h i rank_vol_chg (percentyl na tle CALEGO uniwersum w tej samej godzinie — informacja, ktorej modele nigdy nie mialy), event_dekorelacji (ZDARZENIE: coin +1% w 6h przy BTC<=0 i wolumenie powyzej mediany rynku). Para z P5-ENS-3x izoluje ich wklad — poza nimi identyczne.",
+ "models": [
+  "lgb_h6",
+  "xgb_h16",
+  "cat_h24"
+ ],
+ "feature_mix": {
+  "lgb_h6": {
+   "add": [
+    "rsi_4h",
+    "btc_rsi_4h",
+    "rsi_1d",
+    "r_htf_trend_4h",
+    "trend_4h",
+    "r_di_spread",
+    "x_rsi_21",
+    "rsi",
+    "x_rsi_7",
+    "x_ema9_over_21",
+    "ema_mid_r",
+    "trend_1h",
+    "r_cci_20",
+    "r_vwap_distance",
+    "vwap_dev",
+    "resid_ret_24h",
+    "rank_mom_24h",
+    "rank_vol_chg",
+    "event_dekorelacji"
+   ],
+   "remove": []
+  },
+  "xgb_h16": {
+   "add": [
+    "rsi_4h",
+    "btc_rsi_4h",
+    "rsi_1d",
+    "r_htf_trend_4h",
+    "trend_4h",
+    "btc_trend_1d",
+    "x_real_vol_6h",
+    "fib_dist_pct",
+    "adx_14",
+    "e_ichimoku_cloud_thickness",
+    "hour_cos",
+    "hour_sin",
+    "resid_ret_24h",
+    "rank_mom_24h",
+    "rank_vol_chg",
+    "event_dekorelacji"
+   ],
+   "remove": []
+  },
+  "cat_h24": {
+   "add": [
+    "rsi_4h",
+    "btc_rsi_4h",
+    "rsi_1d",
+    "r_htf_trend_4h",
+    "trend_4h",
+    "x_btc_leadlag",
+    "ls_ratio_chg_24h",
+    "volume_zscore",
+    "e_atr_pct_x_vol_zscore",
+    "sr_node_strength",
+    "volume_ratio",
+    "resid_ret_24h",
+    "rank_mom_24h",
+    "rank_vol_chg",
+    "event_dekorelacji"
+   ],
+   "remove": []
+  }
+ }
+}

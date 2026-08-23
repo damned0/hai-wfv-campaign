@@ -977,6 +977,23 @@ def load_symbol_data(symbol: str) -> Optional[Dict]:
             logger.warning(f'{symbol}: korelacje_btc nie wczytane ({_ke}) — cechy beda 0.0')
             out['korelacje'] = None
 
+        # CECHY PRZEKROJOWE (2026-08-23) — zdarzenia i pozycja na tle rynku,
+        # zamiast rolling korelacji (ta okazala sie bezuzyteczna, patrz
+        # raporty/korebtc.txt i kampania P5). Liczone przez
+        # data_warehouse/licz_cechy_przekrojowe.py. Brak pliku = wartosci
+        # neutralne, nie blad.
+        try:
+            _pp = WH_BASE.parent.parent / 'cechy_przekrojowe' / f'{symbol}.parquet'
+            if _pp.exists():
+                _pdf = pd.read_parquet(_pp)
+                _pdf['timestamp'] = pd.to_datetime(_pdf['timestamp'])
+                out['przekrojowe'] = _pdf.sort_values('timestamp').reset_index(drop=True)
+            else:
+                out['przekrojowe'] = None
+        except Exception as _pe:
+            logger.warning(f'{symbol}: cechy_przekrojowe nie wczytane ({_pe}) — beda neutralne')
+            out['przekrojowe'] = None
+
         # Fear & Greed Index (globalny, cache'owany raz - audyt 2026-07-04)
         out['fear_greed'] = _load_fear_greed()
         # BTC context (globalny, cache'owany raz - audyt 2026-07-04)
@@ -1083,6 +1100,16 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
         taker_times = None
         taker_ratio_arr = None
         has_taker = False
+
+    PRZEKR_KOL = ['resid_ret_4h', 'resid_ret_24h', 'rank_mom_24h',
+                  'rank_vol_chg', 'event_dekorelacji']
+    df_prz = data.get('przekrojowe')
+    if df_prz is not None and len(df_prz) > 0:
+        prz_times = df_prz['timestamp'].values
+        prz_arr = {k: df_prz[k].values.astype(np.float64) for k in PRZEKR_KOL if k in df_prz.columns}
+        has_prz = len(prz_arr) == len(PRZEKR_KOL)
+    else:
+        prz_times, prz_arr, has_prz = None, {}, False
 
     KOREL_KOL = ['btc_corr_24h', 'btc_corr_72h', 'btc_corr_change',
                  'btc_beta_72h', 'rel_strength_btc', 'corr_breakdown']
@@ -1232,6 +1259,29 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
         else:
             ls_ratio = 1.0
             ls_ratio_chg_24h = 0.0
+
+        # === CECHY PRZEKROJOWE (searchsorted; godzinowe, bez ryzyka stempla).
+        # Neutralne przy braku: residualy 0 (brak wlasnego momentum),
+        # percentyle 0.5 (srodek stawki), zdarzenie 0 (nie wystapilo). ===
+        if has_prz:
+            _pi = np.searchsorted(prz_times, ts, side='right') - 1
+            if _pi >= 0:
+                def _pv(nazwa, dom):
+                    v = prz_arr[nazwa][_pi]
+                    return float(v) if np.isfinite(v) else dom
+                resid_ret_4h = _pv('resid_ret_4h', 0.0)
+                resid_ret_24h = _pv('resid_ret_24h', 0.0)
+                rank_mom_24h = _pv('rank_mom_24h', 0.5)
+                rank_vol_chg = _pv('rank_vol_chg', 0.5)
+                event_dekorelacji = _pv('event_dekorelacji', 0.0)
+            else:
+                resid_ret_4h = resid_ret_24h = 0.0
+                rank_mom_24h = rank_vol_chg = 0.5
+                event_dekorelacji = 0.0
+        else:
+            resid_ret_4h = resid_ret_24h = 0.0
+            rank_mom_24h = rank_vol_chg = 0.5
+            event_dekorelacji = 0.0
 
         # === KORELACJA Z BTC (searchsorted jak ls/taker; dane GODZINOWE, wiec
         # bez ryzyka stempla wstecznego — w odroznieniu od macro/fear_greed/OI,
@@ -1444,6 +1494,11 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
              'x_btc_leadlag': float(macro_vals['btc_dominance']) - float(momentum),
              'cvd_x_adx': float(cvd_x_adx),
             # Fear & Greed Index (audyt 2026-07-04, pelna historia 2018-dzis)
+            'resid_ret_4h': resid_ret_4h,
+            'resid_ret_24h': resid_ret_24h,
+            'rank_mom_24h': rank_mom_24h,
+            'rank_vol_chg': rank_vol_chg,
+            'event_dekorelacji': event_dekorelacji,
             'btc_corr_24h': btc_corr_24h,
             'btc_corr_72h': btc_corr_72h,
             'btc_corr_change': btc_corr_change,
