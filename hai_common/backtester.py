@@ -524,6 +524,15 @@ _TOP_FEATURES_SNAPSHOT = [
 # sluzy do pomiaru A/B, nie do produkcji. Nie dotyka ATR ani odleglosci TP/SL
 # (te licza sie w _precompute_indicators z surowych swiec) — zmienia wylacznie
 # ROZDZIELCZOSC POMIARU trafienia.
+# === PROG ADX (2026-08-24) =================================================
+# Wartosc 22 byla ZASZYTA po obu stronach (backtester i ai_strategy) i nigdy
+# nie zmierzona — dokladnie jak prog pewnosci 0.45, ktory po zmierzeniu okazal
+# sie kosztowac polowe zysku. Zmierzone 2026-08-24 na zywym EPV: przy progu
+# pewnosci 0.20 wszystkie 50 symboli bylo zablokowanych, z czego 28% wlasnie
+# przez ADX (mediana 12.3, max 20.3) — czyli ADX stal sie nowym waskim gardlem.
+# Domyslnie 22, wiec bez zmiany zachowania. HAI_ADX_MIN pozwala zmierzyc krzywa.
+_ADX_MIN = float(os.environ.get("HAI_ADX_MIN", "22"))
+
 _EXIT_ON_CLOSE   = os.environ.get("HAI_EXIT_ON_CLOSE") == "1"
 
 _SL_LOCK         = os.environ.get("HAI_SL_LOCK") == "1"
@@ -1053,7 +1062,7 @@ class Backtester:
         BB_LONG_MAX   = 0.30
         BB_SHORT_MIN  = 0.70
         BB_WIDTH_MAX  = 0.12
-        ADX_MIN       = 22
+        ADX_MIN       = _ADX_MIN   # z HAI_ADX_MIN, domyslnie 22
         REGIME_ADJUST = {0: 0.02, 1: 0.00, 2: 0.03}
 
         n = len(candles_1h)
