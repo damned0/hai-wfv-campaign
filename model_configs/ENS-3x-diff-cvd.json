@@ -1,0 +1,37 @@
+{
+ "name": "ENS-3x-diff-cvd",
+ "created": "2026-08-24",
+ "description": "ENS-3x-diff + trzy cechy order flow (cvd_z24/cvd_z6/delta_pct_ma6). Para z ENS-3x-diff przy ADX 8 — poza tymi trzema cechami identyczne, wiec roznica izoluje wklad CVD. POWOD: CVD zmierzono dotad WYLACZNIE na rodzinie P6/P7 (lgb_h6/xgb_h16/cat_h24), gdzie dalo +28% w walidatorze (12/12 okien, p=0.0002), ale cala ta rodzina wypada gorzej od tego tria — +1807% portfela przy DD 12.0% wobec +1944% przy DD 0.9%. Czy CVD pomaga ZWYCIEZCY, nie bylo sprawdzone. UWAGA przy interpretacji: w rodzinie P CVD podnioslo liczbe sygnalow z 22688 na 29838, ale rachunek wzial tyle samo (6783 -> 6918) — limit 10 pozycji zjadl nadwyzke. Trio przy ADX 8 ma wieksza rezerwe (wykonuje 53%, nie 30%), wiec tu nadwyzka moze sie przeloz na wynik. To jest wlasnie pytanie tego przebiegu.",
+ "models": [
+  "lgb_sniper_6h",
+  "cat_trend_6h",
+  "xgb_rev_6h"
+ ],
+ "expected_weights": "auto (precision-basis)",
+ "feature_mix": {
+  "lgb_sniper_6h": {
+   "add": [
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6"
+   ],
+   "remove": []
+  },
+  "cat_trend_6h": {
+   "add": [
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6"
+   ],
+   "remove": []
+  },
+  "xgb_rev_6h": {
+   "add": [
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6"
+   ],
+   "remove": []
+  }
+ }
+}
