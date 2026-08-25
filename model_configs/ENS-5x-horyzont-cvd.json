@@ -1,0 +1,69 @@
+{
+ "name": "ENS-5x-horyzont-cvd",
+ "created": "2026-08-25",
+ "description": "ENS-5x-horyzont (SKLAD PRODUKCYJNY EPV) + trzy cechy order flow. Para z ENS-5x-horyzont przy ADX 8 — poza cvd_z24/cvd_z6/delta_pct_ma6 identyczne. POWOD: CVD zmierzono na rodzinie P6/P7 (+28%, ale gorsza rodzina) i na samym trio ENS-3x-diff (+6.9% walidator / +4.8% portfel, 12/12 okien). Sklad produkcyjny to trio PLUS rf_h24 i et_h8 — nie byl mierzony ani z CVD, ani przy ADX 8 (te przebiegi zjadl wygasly pod 2026-08-24). Para odpowiada na dwa pytania naraz: czy CVD dziala na produkcji i czy RF/ET pomagaja czy szkodza wzgledem samego tria.",
+ "models": [
+  "lgb_sniper_6h",
+  "cat_trend_6h",
+  "xgb_rev_6h",
+  "rf_h24",
+  "et_h8"
+ ],
+ "feature_mix": {
+  "rf_h24": {
+   "add": [
+    "oi_zscore_30d",
+    "oi_change_24h",
+    "sp500_chg",
+    "btc_rsi_4h",
+    "vix_chg",
+    "btc_dominance_chg",
+    "dxy_chg",
+    "x_btc_leadlag",
+    "btc_trend_1d",
+    "us10y_chg",
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6"
+   ]
+  },
+  "et_h8": {
+   "add": [
+    "r_di_spread",
+    "r_htf_trend_4h",
+    "x_rsi_21",
+    "x_rsi_7",
+    "x_ema9_over_21",
+    "r_cci_20",
+    "vwap_dev",
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6"
+   ]
+  },
+  "lgb_sniper_6h": {
+   "add": [
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6"
+   ],
+   "remove": []
+  },
+  "cat_trend_6h": {
+   "add": [
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6"
+   ],
+   "remove": []
+  },
+  "xgb_rev_6h": {
+   "add": [
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6"
+   ],
+   "remove": []
+  }
+ }
+}

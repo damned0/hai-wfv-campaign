@@ -1,0 +1,39 @@
+{
+  "name": "ENS-5x-horyzont",
+  "created": "2026-08-14",
+  "description": "5-modelowy ensemble: produkcyjne trio (lgb_sniper_6h/cat_trend_6h/xgb_rev_6h, jak ENS-3x-diff) + rf_h24 (klaster makro/BTC, horyzont 24h) + et_h8 (klaster strukturalny r_/x_, horyzont 8h). Zero nakladania cech miedzy tymi 5 modelami z zalozenia — test czy realna dywersyfikacja cech/horyzontow obniza korelacje glosow (0.92-0.99 w poprzedniej kampanii) i poprawia minPF ponad ENS-3x-diff (PF 10.80, minPF 3.99, @0.45/0.40).",
+  "models": [
+    "lgb_sniper_6h",
+    "cat_trend_6h",
+    "xgb_rev_6h",
+    "rf_h24",
+    "et_h8"
+  ],
+  "feature_mix": {
+    "rf_h24": {
+      "add": [
+        "oi_zscore_30d",
+        "oi_change_24h",
+        "sp500_chg",
+        "btc_rsi_4h",
+        "vix_chg",
+        "btc_dominance_chg",
+        "dxy_chg",
+        "x_btc_leadlag",
+        "btc_trend_1d",
+        "us10y_chg"
+      ]
+    },
+    "et_h8": {
+      "add": [
+        "r_di_spread",
+        "r_htf_trend_4h",
+        "x_rsi_21",
+        "x_rsi_7",
+        "x_ema9_over_21",
+        "r_cci_20",
+        "vwap_dev"
+      ]
+    }
+  }
+}
