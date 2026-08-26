@@ -1,0 +1,34 @@
+{
+ "name": "ENS-3x-diff-resid",
+ "created": "2026-08-26",
+ "description": "ENS-3x-diff + reszty przekrojowe. resid_ret_24h (0.339/0.68) to zwrot alta po odjeciu tego, co tlumaczy beta*BTC — wlasna alfa, nie beta. rank_mom_24h (0.215/0.45) to percentyl momentum na tle CALEGO uniwersum w tej samej godzinie. Obie dzialaly w rodzinie P6, ale ta rodzina okazala sie gorsza od tria (+1825% przy DD 11.8% wobec +1944% przy DD 0.9%) — wiec ich wklad nigdy nie zostal sprawdzony tam, gdzie ma znaczenie.",
+ "models": [
+  "lgb_sniper_6h",
+  "cat_trend_6h",
+  "xgb_rev_6h"
+ ],
+ "expected_weights": "auto (precision-basis)",
+ "feature_mix": {
+  "lgb_sniper_6h": {
+   "add": [
+    "resid_ret_24h",
+    "rank_mom_24h"
+   ],
+   "remove": []
+  },
+  "cat_trend_6h": {
+   "add": [
+    "resid_ret_24h",
+    "rank_mom_24h"
+   ],
+   "remove": []
+  },
+  "xgb_rev_6h": {
+   "add": [
+    "resid_ret_24h",
+    "rank_mom_24h"
+   ],
+   "remove": []
+  }
+ }
+}

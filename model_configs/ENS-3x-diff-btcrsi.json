@@ -1,0 +1,31 @@
+{
+ "name": "ENS-3x-diff-btcrsi",
+ "created": "2026-08-26",
+ "description": "ENS-3x-diff + btc_rsi_4h. Trzecia najmocniejsza cecha w calym magazynie (sila 0.873 po rsi_4h 1.237 i rsi_1d 1.052), korelacja z trio 0.676 — mocna, ale nie duplikat: trio ma wlasne RSI i trend BTC, nie ma momentum samego BTC na 4h. UWAGA: cecha NIE jest nietestowana — uzywal jej rf_h24, czyli model wyrzucony z produkcji 25.08 (piatka z nim wypadala o 6% gorzej niz trio bez niego). Ten przebieg sprawdza ja w zespole, ktory faktycznie wygrywa.",
+ "models": [
+  "lgb_sniper_6h",
+  "cat_trend_6h",
+  "xgb_rev_6h"
+ ],
+ "expected_weights": "auto (precision-basis)",
+ "feature_mix": {
+  "lgb_sniper_6h": {
+   "add": [
+    "btc_rsi_4h"
+   ],
+   "remove": []
+  },
+  "cat_trend_6h": {
+   "add": [
+    "btc_rsi_4h"
+   ],
+   "remove": []
+  },
+  "xgb_rev_6h": {
+   "add": [
+    "btc_rsi_4h"
+   ],
+   "remove": []
+  }
+ }
+}

@@ -1,0 +1,37 @@
+{
+ "name": "ENS-3x-diff-oba",
+ "created": "2026-08-26",
+ "description": "ENS-3x-diff + btc_rsi_4h + reszty przekrojowe. Trzeci punkt pary: jesli oba warianty osobno pomagaja, ten pokaze czy efekty sie sumuja, czy pokrywaja.",
+ "models": [
+  "lgb_sniper_6h",
+  "cat_trend_6h",
+  "xgb_rev_6h"
+ ],
+ "expected_weights": "auto (precision-basis)",
+ "feature_mix": {
+  "lgb_sniper_6h": {
+   "add": [
+    "btc_rsi_4h",
+    "resid_ret_24h",
+    "rank_mom_24h"
+   ],
+   "remove": []
+  },
+  "cat_trend_6h": {
+   "add": [
+    "btc_rsi_4h",
+    "resid_ret_24h",
+    "rank_mom_24h"
+   ],
+   "remove": []
+  },
+  "xgb_rev_6h": {
+   "add": [
+    "btc_rsi_4h",
+    "resid_ret_24h",
+    "rank_mom_24h"
+   ],
+   "remove": []
+  }
+ }
+}
