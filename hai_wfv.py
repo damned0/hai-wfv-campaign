@@ -208,6 +208,27 @@ def load_config(name: str):
     return json.loads(p.read_text()).get("models", [])
 
 
+def config_wagi_klas(name: str) -> "dict | None":
+    """Wagi klas {0:NEUTRAL, 1:LONG, 2:SHORT} z configu, albo None (domyslne).
+
+    Dodane 2026-08-27. Modele produkcyjne okazaly sie jednostronne: p99 dla
+    P(long) to 0.33-0.39, ponizej bramki glosu 0.40 — live nie moze otworzyc
+    pozycji na wzrost, 40 transakcji z rzedu bylo shortami. Etykiety maja tylko
+    +7% przewagi SHORT, ale przy 93.6% klasy NEUTRAL ta drobna przewaga
+    wzmacnia sie w rozkladzie wyjsciowym. Wagi pozwalaja to wyrownac przy
+    treningu, zamiast obnizac progi (co wpuszcza takze slabe shorty).
+
+    Klucze w JSON sa tekstem — zamieniamy na int, bo sklearn wymaga etykiet.
+    """
+    p = ROOT / "model_configs" / f"{name}.json"
+    if not p.exists():
+        return None
+    w = json.loads(p.read_text()).get("wagi_klas")
+    if not w:
+        return None
+    return {int(k): float(v) for k, v in w.items()}
+
+
 def config_feature_mix(name: str) -> dict:
     """Zwraca feature_mix z configu (GRANDKAMPANIA §3.2 / THC §9): per-model modyfikacje cech.
     np. {"cat_sniper_6h": {"add": ["oi_change_24h"], "remove": ["bb_bandwidth_pct"]}}."""
@@ -232,6 +253,70 @@ def _apply_symbol_whitelist(df):
     return df
 
 
+# Skrypty, ktorych zmiana oznacza INNA SEMANTYKE cech w cache'u. Lista celowo
+# wezsza niz w tools/waliduj_rejestr — tu chodzi wylacznie o to, co wchodzi do
+# datasetu.
+_ZRODLA_SEMANTYKI = [
+    "hai_common/hai_common/ml_trainer.py",
+    "data_warehouse/licz_korelacje_btc.py",
+    "data_warehouse/licz_cechy_przekrojowe.py",
+    "data_warehouse/licz_cechy_cvd.py",
+]
+
+
+def _cache_przeterminowany(cache: Path) -> list:
+    """Czy ktorykolwiek skrypt liczacy cechy jest nowszy niz cache.
+
+    POWOD (2026-08-24). build_dataset sprawdzal WYLACZNIE, czy cache ma
+    potrzebne horyzonty etykiet. Po wpieciu cech CVD przebudowa cache'u
+    zwrocila plik z 2026-08-21 i zalogowala "dataset z cache: 3,908,143
+    wierszy" — czyli wygladala na sukces, a nowych cech w nim nie bylo.
+    Wykryte przypadkiem, odruchowym uruchomieniem tools/waliduj_cache.py.
+
+    Ten sam wzorzec trafil juz wczesniej: mapa cech policzona 2026-08-21 na
+    cache'u sprzed naprawy przecieku dala oi_zscore_30d sile 0.883 zamiast
+    0.242 — i ta cecha trafila jako kotwica do czterech modeli P4.
+
+    Sprawdzenie kosztuje kilka stat(), wiec robimy je zawsze zamiast liczyc
+    na to, ze ktos pamieta o osobnym walidatorze.
+
+    Swieze SWIECE celowo NIE unieważniaja cache'u — cron dociaga je co
+    godzine i cache zawsze bylby o kilka godzin starszy. Chodzi o zmiane
+    ZNACZENIA cech, nie o ich zakres.
+    """
+    try:
+        t_cache = cache.stat().st_mtime
+    except OSError:
+        return []
+    mlodsze = []
+    for wzgl in _ZRODLA_SEMANTYKI:
+        p = ROOT / wzgl
+        try:
+            t = p.stat().st_mtime
+        except OSError:
+            continue
+        if t > t_cache:
+            mlodsze.append((f"skrypt {p.name}", datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M")))
+
+    # Katalogi z policzonymi cechami. Zapisuje do nich WYLACZNIE recznie
+    # uruchamiany skrypt (licz_cechy_*), nigdy cron — wiec ich mtime oznacza
+    # swiadome przeliczenie, a nie dociagniecie swiec. Bez tego cache przezyl
+    # 2026-08-26 przebudowe calej historii order flow: skrypty sie nie zmienily,
+    # wiec bramka oparta na samych plikach .py niczego nie zauwazyla.
+    for kat in ("data_warehouse/cechy_cvd", "data_warehouse/cechy_przekrojowe",
+                "data_warehouse/korelacje_btc"):
+        d = ROOT / kat
+        if not d.exists():
+            continue
+        try:
+            t = max(p.stat().st_mtime for p in d.glob("*.parquet"))
+        except (OSError, ValueError):
+            continue
+        if t > t_cache:
+            mlodsze.append((f"cechy {d.name}", datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M")))
+    return mlodsze
+
+
 def build_dataset(horizons):
     """Dataset z etykietami dla WSZYSTKICH potrzebnych horyzontów naraz.
     Budowany RAZ (drogie: ~106 symboli × cechy), cache'owany na dysk."""
@@ -247,9 +332,17 @@ def build_dataset(horizons):
             if c.startswith("label_h") and c[7:].isdigit():
                 have.add(int(c[7:]))
         if set(horizons) <= have:
-            df = _apply_symbol_whitelist(df)
-            log.info(f"dataset z cache: {len(df):,} wierszy, horyzonty {sorted(have)}")
-            return df
+            przeterm = _cache_przeterminowany(DATASET_CACHE)
+            if przeterm:
+                log.warning("CACHE NIEAKTUALNY — %s nowszych niz cache; przebudowa", len(przeterm))
+                for opis, kiedy in przeterm:
+                    log.warning("    %s  %s", kiedy, opis)
+            else:
+                df = _apply_symbol_whitelist(df)
+                log.info(f"dataset z cache: {len(df):,} wierszy, horyzonty {sorted(have)}")
+                return df
+        else:
+            log.info(f"cache ma horyzonty {sorted(have)}, potrzebne {sorted(horizons)} — przebudowa")
         log.info(f"cache ma horyzonty {sorted(have)}, potrzebne {sorted(horizons)} — przebudowa")
 
     # Standardowe etykiety (6/24/48/72/96) build_features liczy zawsze.
@@ -337,10 +430,18 @@ def label_col(horizon: int) -> str:
     return std.get(horizon) or f"label_h{horizon}"   # extra_horizons -> label_h{H}
 
 
-def train_window(df_train, models, mt, mix=None):
+def train_window(df_train, models, mt, mix=None, wagi_klas=None):
     """Trenuje modele configu WYŁĄCZNIE na df_train (dane sprzed cutoffu).
     mix: {model_name: {"add": [...], "remove": [...]}} — feature-mix per model
-    (GRANDKAMPANIA §3.2, THC §9): nakłada modyfikacje na domyślne cechy profilu."""
+    (GRANDKAMPANIA §3.2, THC §9): nakłada modyfikacje na domyślne cechy profilu.
+
+    wagi_klas (2026-08-27): {0:..,1:..,2:..} — waga NEUTRAL/LONG/SHORT przy
+    treningu. Powod: modele produkcyjne okazaly sie jednostronne — p99 dla
+    P(long) wynosi 0.33-0.39, czyli PONIZEJ bramki glosu 0.40, wiec live nie
+    moze otworzyc pozycji na wzrost. Zmierzone: 40 transakcji, 100% shortow.
+    Domyslne {0:1.0, 1:2.5, 2:2.5} traktuja oba kierunki rowno, ale etykiety
+    maja +7% przewagi SHORT, a rzadka klasa wzmacnia te przewage w rozkladzie
+    wyjsciowym. Podnoszac wage LONG mozna to wyrownac BEZ ruszania progow."""
     mix = mix or {}
     trained = {}
     for name in models:
@@ -490,7 +591,7 @@ def train_window(df_train, models, mt, mix=None):
             mt.MODEL_LABEL_COLUMN[core] = lbl
             if feats:
                 mt.MODEL_FEATURES[core] = feats
-            res = mt.train_models(df_use, only=[core])
+            res = mt.train_models(df_use, only=[core], class_weights=wagi_klas)
             if core in res and "model" in res[core]:
                 trained[name] = res[core]
         except Exception as e:
@@ -747,6 +848,9 @@ def main():
         if bad:
             log.warning(f"{n}: nieodtwarzalne modele {bad} — config będzie NIEPEŁNY")
         _mix = config_feature_mix(n)
+        _wagi = config_wagi_klas(n)
+        if _wagi:
+            log.info(f"{n}: wagi klas z configu {_wagi} (0=NEUTRAL 1=LONG 2=SHORT)")
         plan[n] = (models, _mix)
         if _mix:
             log.info(f"{n}: feature_mix aktywny ({len(_mix)} modeli z modyfikacjami)")
@@ -827,13 +931,15 @@ def main():
         mix_bank = {}
         for _cfg, _mmodels in mix_models.items():
             _mmix = {m: plan[_cfg][1][m] for m in _mmodels}
+            _mwagi = config_wagi_klas(_cfg)
             # FIX 2026-08-07: bylo mix_bank.update(...) — klucz = SAMA nazwa
             # modelu, wbrew komentarzowi wyzej ("pod kluczem (cfg, model)").
             # Dopoki kazdy config mial inny model (cat_/rf_/lgb_) nic sie nie
             # dzialo, ale przy dwoch configach mixujacych TEN SAM model drugi
             # po cichu nadpisywal pierwszy i oba liczyly sie na cechach tego
             # drugiego. Blokowalo to laczenie configow w jeden proces.
-            for _m, _d in train_window(df_train, _mmodels, mt, mix=_mmix).items():
+            for _m, _d in train_window(df_train, _mmodels, mt, mix=_mmix,
+                                       wagi_klas=_mwagi).items():
                 mix_bank[(_cfg, _m)] = _d
         log.info(f"    wytrenowano {len(bank)} czystych + {len(mix_bank)} mixowanych w {time.time()-t_tr:.0f}s")
         if not bank and not mix_bank:
@@ -983,7 +1089,8 @@ def main():
 
             log.info(f"  W{w+1}/{args.windows}: trening < {cutoff:%Y-%m-%d} "
                      f"({len(df_train):,} próbek) → test {win_start:%Y-%m-%d}..{(now-timedelta(days=off_end)):%Y-%m-%d}")
-            trained = train_window(df_train, _models, mt, mix=_mx or None)
+            trained = train_window(df_train, _models, mt, mix=_mx or None,
+                                   wagi_klas=_wagi or None)
             if not trained:
                 log.warning(f"  W{w+1}: zero modeli — okno pominięte")
                 continue
