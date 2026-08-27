@@ -208,6 +208,27 @@ def load_config(name: str):
     return json.loads(p.read_text()).get("models", [])
 
 
+def config_progi_kierunkowe(name: str) -> tuple:
+    """(prog_long, prog_short) z configu — osobne progi dla obu kierunkow.
+
+    Dodane 2026-08-27. backtester ma _THRESHOLD_LONG/_THRESHOLD_SHORT od
+    2026-07-07, ale NIC ich nie ustawialo — hai_wfv nie mial ani flagi, ani
+    odczytu z configu, wiec oba zostawaly None i spadaly na wspolny prog.
+    Martwy parametr, jak HAI_ADX_MIN w live do 2026-08-25.
+
+    Po co teraz: prog nieosiagalny (>1.0) dla jednego kierunku daje config
+    JEDNOKIERUNKOWY. To pozwala zmierzyc kazdy kierunek osobno, zamiast
+    zgadywac z przechylu wspolnego modelu. Potrzebne, bo modele produkcyjne
+    okazaly sie jednostronne: p99 dla P(long) = 0.33-0.39, ponizej bramki
+    glosu 0.40 — live nie otworzyl ani jednej pozycji na wzrost w 40 probach.
+    """
+    p = ROOT / "model_configs" / f"{name}.json"
+    if not p.exists():
+        return (None, None)
+    c = json.loads(p.read_text())
+    return (c.get("prog_long"), c.get("prog_short"))
+
+
 def config_wagi_klas(name: str) -> "dict | None":
     """Wagi klas {0:NEUTRAL, 1:LONG, 2:SHORT} z configu, albo None (domyslne).
 
@@ -848,6 +869,10 @@ def main():
         if bad:
             log.warning(f"{n}: nieodtwarzalne modele {bad} — config będzie NIEPEŁNY")
         _mix = config_feature_mix(n)
+        _pl, _ps = config_progi_kierunkowe(n)
+        if _pl is not None or _ps is not None:
+            log.info(f"{n}: progi kierunkowe long={_pl} short={_ps} "
+                     f"(>1.0 = kierunek WYLACZONY)")
         _wagi = config_wagi_klas(n)
         if _wagi:
             log.info(f"{n}: wagi klas z configu {_wagi} (0=NEUTRAL 1=LONG 2=SHORT)")
@@ -1001,6 +1026,8 @@ def main():
             # przywroc bazowy prog, zeby kolejny config nie odziedziczyl ostatniego ze sweepu
             if _SWEEP:
                 bt_mod._DECISION_THRESHOLD = args.threshold
+            bt_mod._THRESHOLD_LONG = None
+            bt_mod._THRESHOLD_SHORT = None
 
     # Shard liczy tylko czesc okien — zapisuje je jako czastkowe (window_days
     # ujemne = marker "czastkowy"), a werdykt liczy dopiero merge_shards().
@@ -1089,6 +1116,11 @@ def main():
 
             log.info(f"  W{w+1}/{args.windows}: trening < {cutoff:%Y-%m-%d} "
                      f"({len(df_train):,} próbek) → test {win_start:%Y-%m-%d}..{(now-timedelta(days=off_end)):%Y-%m-%d}")
+            # Progi kierunkowe configu — ustawiane PRZED symulacja okna i
+            # zdejmowane po niej, zeby kolejny config nie odziedziczyl cudzych.
+            # Ten sam wzorzec co przy sweepie progow nizej.
+            bt_mod._THRESHOLD_LONG = _pl
+            bt_mod._THRESHOLD_SHORT = _ps
             trained = train_window(df_train, _models, mt, mix=_mx or None,
                                    wagi_klas=_wagi or None)
             if not trained:
