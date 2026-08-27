@@ -985,11 +985,20 @@ def main():
         for ci, (cfg_name, (_models, _mx)) in enumerate(plan.items(), 1):
             # Czyste modele z banku; mixowane z mix_bank pod kluczem (config, model)
             avail = {m: bank[m] for m in _models if m in bank}
-            if _mx:
-                for _m in _models:
-                    if _m in _mx and (cfg_name, _m) in mix_bank:
-                        avail[_m] = mix_bank[(cfg_name, _m)]
+            # FIX 2026-08-28: warunek byl `if _mx:` — czyli mix_bank przeszukiwano
+            # WYLACZNIE dla configow z feature_mix. Config z samymi wagami klas ma
+            # _mx puste, wiec jego modele (wytrenowane osobno, wlasnie po to) nigdy
+            # nie trafialy do `avail`, config byl po cichu pomijany i przebieg
+            # konczyl sie BEZ ZADNEGO WYNIKU. Objaw: "No files were found:
+            # HAI-NL/data/hairesearch.db" przy zielonym statusie zadania.
+            # Teraz siegamy po klucz (config, model) zawsze, gdy istnieje.
+            for _m in _models:
+                if (cfg_name, _m) in mix_bank:
+                    avail[_m] = mix_bank[(cfg_name, _m)]
             if not avail:
+                # bylo ciche `continue` — przy braku modeli config znikal bez sladu
+                log.error(f"    {cfg_name}: ZERO modeli dostepnych w tym oknie "
+                          f"(bank={len(bank)}, mix_bank={len(mix_bank)}) — config POMINIETY")
                 continue
             # FIX 2026-08-28: progi kierunkowe ustawialem TYLKO w galezi
             # pojedynczego configu (ok. linii 1122). Kampanie ida galezia
