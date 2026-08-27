@@ -980,6 +980,15 @@ def main():
                         avail[_m] = mix_bank[(cfg_name, _m)]
             if not avail:
                 continue
+            # FIX 2026-08-28: progi kierunkowe ustawialem TYLKO w galezi
+            # pojedynczego configu (ok. linii 1122). Kampanie ida galezia
+            # wielokonfigurową (bank + mix_bank), wiec DIR-S wystartowal z
+            # prog_long=9.99 w logu i mimo to zrobil 3392 longi — filtr nigdy
+            # nie zostal zastosowany. Ustawiamy PER CONFIG, tuz przed jego
+            # symulacja, bo w tej petli configi zmieniaja sie w kazdej iteracji.
+            _cpl, _cps = config_progi_kierunkowe(cfg_name)
+            bt_mod._THRESHOLD_LONG = _cpl
+            bt_mod._THRESHOLD_SHORT = _cps
             inject(ensemble, avail)
             # Symulacja RÓWNOLEGLE po symbolach (2026-07-14). Wczesniej petla byla
             # sekwencyjna: 76 configow x 106 symboli x 12 okien, jeden symbol na raz

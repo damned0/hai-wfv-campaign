@@ -1408,7 +1408,19 @@ class Backtester:
                         _meta_block[valid_idx] = meta_proba < _cfg_ml.META_LABEL_THRESHOLD
                         _valid = _valid & ~_meta_block
         except Exception as _meta_e:
-            logger.debug(f"meta-label backtester hook skip: {_meta_e}")
+            # FIX 2026-08-24: bylo logger.debug — i to jest powod, dla ktorego
+            # meta-labeling przez rok uchodzil za "sprawdzony, nie pomaga".
+            # Model meta_label.pkl byl NIEWCZYTYWALNY (ModuleNotFoundError:
+            # '_loss'), wyjatek szedl do debug, przebieg konczyl sie sukcesem
+            # z wynikiem jak bez meta-labelingu — i tak powstal wniosek.
+            # W ensemble.py naprawione (fail-closed) 2026-08-23; walidator
+            # zostal z cichym polykaniem, wiec nadal mogl zameldowac "brak
+            # wplywu" zamiast "nie uruchomilem".
+            # Tu NIE zamykamy transakcji jak w live — walidator ma pokazac
+            # prawde o configu, a nie chronic kapital. Ale ma krzyczec.
+            logger.error(f"meta-label backtester hook: {_meta_e} — przebieg leci "
+                         f"BEZ meta-labelingu, wynik NIE opisuje wlaczonej flagi",
+                         exc_info=True)
 
         # CONSENSUS-DEPTH GATING (audyt 2026-07-07, K1 z NewHorizonts) - trade
         # wazny tylko gdy >= _CONSENSUS_MIN modeli zgadza sie z KIERUNKIEM decyzji
