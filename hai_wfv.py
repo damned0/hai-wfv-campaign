@@ -937,16 +937,26 @@ def main():
         # Przy kampanii gdzie WSZYSTKIE configi maja feature_mix to dokladnie
         # 2x koszt treningu. Bierzemy do czystego banku tylko te modele, ktore
         # jakis config faktycznie chce bez mixu.
-        needed = sorted({m for models, _mx in plan.values() for m in models
-                         if parse_model(m) and not (_mx and m in _mx)})
+        # FIX 2026-08-28: config z WLASNYMI WAGAMI KLAS nie moze korzystac ze
+        # wspolnego banku — bank trenuje kazdy model RAZ dla wszystkich configow,
+        # wiec wagi jednego przeciekalyby na pozostale. Wykryte na DIR-S/DIR-N:
+        # wagi 2.5/6.0 i 4.0/4.0 dawaly wyniki identyczne co do kilku transakcji
+        # (3392/3953 vs 3390/3953), bo oba korzystaly z tych samych modeli banku.
+        # Wagi byly odczytane i zalogowane, ale nigdy nie zastosowane.
+        _wlasne = {c for c in plan if config_wagi_klas(c)}
+        needed = sorted({m for c, (models, _mx) in plan.items() for m in models
+                         if parse_model(m) and not (_mx and m in _mx)
+                         and c not in _wlasne})
         # Konfigi z feature_mix: modele w nich trenowane OSOBNO (zmienione cechy),
         # wiec dodajemy je pod kluczem (cfg, model) — nie koliduja z czystym bankiem.
         mix_models = {}
         for _cfg, (_models, _mx) in plan.items():
-            if not _mx:
+            if not _mx and _cfg not in _wlasne:
                 continue
             for _m in _models:
-                if _m in _mx:
+                # config z wlasnymi wagami trenuje WSZYSTKIE swoje modele osobno,
+                # nie tylko te z feature_mix
+                if (_mx and _m in _mx) or _cfg in _wlasne:
                     mix_models.setdefault(_cfg, []).append(_m)
         log.info(f"\n=== OKNO W{w+1}/{args.windows} | trening < {cutoff:%Y-%m-%d} "
                  f"({len(df_train):,} probek) | test {win_start:%Y-%m-%d}..{(now-timedelta(days=off_end)):%Y-%m-%d} "
@@ -955,7 +965,8 @@ def main():
         bank = train_window(df_train, needed, mt)
         mix_bank = {}
         for _cfg, _mmodels in mix_models.items():
-            _mmix = {m: plan[_cfg][1][m] for m in _mmodels}
+            _pmix = plan[_cfg][1] or {}
+            _mmix = {m: _pmix[m] for m in _mmodels if m in _pmix}
             _mwagi = config_wagi_klas(_cfg)
             # FIX 2026-08-07: bylo mix_bank.update(...) — klucz = SAMA nazwa
             # modelu, wbrew komentarzowi wyzej ("pod kluczem (cfg, model)").
