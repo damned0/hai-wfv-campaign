@@ -125,7 +125,15 @@ WH_BASE        = Path(os.environ.get("HAI_WH", "/root/ProjektHAI/data_warehouse"
 BACKTEST_DIR   = Path(__file__).resolve().parent.parent / "data" / "backtest"
 NEURAL_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache" / "neural"
 
-SIZE_SCALE_BY_LOSSES = {0: 1.0, 1: 0.10}
+# HAI_SIZE_SCALE=off wylacza redukcje rozmiaru po stracie (2026-08-28).
+# Po co przelacznik: regula {0:1.0, 1:0.10} zmniejsza pozycje do 10% po JEDNEJ
+# stracie i wraca do pelnej dopiero po zysku. W walidatorze odpala sie w 5.3%
+# transakcji (bo WR 94%), w live w 37% (bo WR ~50%) — siedem razy czesciej.
+# Zmierzone na zamknietych pozycjach: przeliczenie na staly rozmiar dawaloby
+# DEV +28.24 zamiast -3.23, ale EPV -18.44 zamiast -14.50. Przeciwne znaki na
+# 16 i 52 transakcjach to szum, nie odpowiedz — stad pomiar na pelnym WFV.
+SIZE_SCALE_BY_LOSSES = ({0: 1.0, 1: 1.0} if os.environ.get("HAI_SIZE_SCALE") == "off"
+                        else {0: 1.0, 1: 0.10})
 PYRAMID_SL_SCALE     = 0.50
 SL_COOLDOWN_MINUTES  = 120
 

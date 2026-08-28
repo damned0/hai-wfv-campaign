@@ -31,6 +31,10 @@ on:
         description: "lista progow decyzji, np. 0.20,0.30,0.45 — trening RAZ, symulacja N razy; wyniki jako <config>@t<prog>"
         required: false
         default: ""
+      size_scale:
+        description: "off = wylacz redukcje rozmiaru po stracie (SIZE_SCALE_BY_LOSSES). Puste = wlaczona (0.10)"
+        required: false
+        default: ""
       adx_min:
         description: "prog ADX (backtester._ADX_MIN). Puste = 22 (domyslne). Sweep: 14/18/22/26"
         required: false
@@ -131,6 +135,7 @@ jobs:
           # przy pustym wejsciu i ZABILABY caly krok — stad jawne if/fi.
           # HAI_ADX_MIN czytane przez backtester przy imporcie modulu
           if [ -n "${{ inputs.adx_min }}" ]; then export HAI_ADX_MIN="${{ inputs.adx_min }}"; fi
+          if [ -n "${{ inputs.size_scale }}" ]; then export HAI_SIZE_SCALE="${{ inputs.size_scale }}"; fi
           ARGS=""
           if [ -n "${{ inputs.anchor }}" ]; then ARGS="$ARGS --anchor ${{ inputs.anchor }}"; fi
           if [ -n "${{ inputs.threshold_sweep }}" ]; then ARGS="$ARGS --threshold-sweep ${{ inputs.threshold_sweep }}"; fi
