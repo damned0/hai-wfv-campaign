@@ -555,6 +555,100 @@ def latest_deriv_live(symbol: str) -> Dict[str, float]:
     return out
 
 
+_MAGAZYN_CACHE: Dict[str, Dict[str, float]] = {}
+_MAGAZYN_TS: Dict[str, float] = {}
+
+# Wartosci przy braku danych — MUSZA byc identyczne jak w ml_trainer, inaczej
+# model dostaje w live inna wartosc "braku" niz podczas treningu.
+# Zrodla: ml_trainer.py linie ~1300 (przekrojowe), ~1349 (korelacje), ~1275 (cvd).
+_MAGAZYN_DOMYSLNE = {
+    "cvd_z6": 0.0, "cvd_z24": 0.0, "delta_pct_ma6": 0.0,
+    "resid_ret_4h": 0.0, "resid_ret_24h": 0.0,
+    "rank_mom_24h": 0.5, "rank_vol_chg": 0.5, "event_dekorelacji": 0.0,
+    "btc_corr_24h": 0.0, "btc_corr_72h": 0.0, "btc_corr_change": 0.0,
+    "btc_beta_72h": 1.0, "rel_strength_btc": 0.0, "corr_breakdown": 0.0,
+}
+# Ponad tyle godzin cecha jest uznawana za nieaktualna i zastepowana neutralna.
+# 8h, bo zrodlo (OHLCV) odswieza auto_pipeline.sh co 6h — cechy z niego liczone
+# fizycznie nie moga byc swiezsze. 8h = jeden cykl z zapasem na czas ingestu.
+# Gdyby OHLCV szedl co godzine, prog nalezy obnizyc do 3h.
+# Zmierzone 2026-08-29: przy progu 3h bramka blokowala WSZYSTKO, bo ostatnia
+# swieca miala 5.3h. To nie byl blad danych, tylko zbyt ciasny prog.
+_MAGAZYN_MAX_WIEK_H = float(os.environ.get("HAI_MAGAZYN_MAX_WIEK_H", "8"))
+
+_MAGAZYN_RODZINY = {
+    "cechy_cvd": ["cvd_z6", "cvd_z24", "delta_pct_ma6"],
+    "cechy_przekrojowe": ["resid_ret_4h", "resid_ret_24h", "rank_mom_24h",
+                          "rank_vol_chg", "event_dekorelacji"],
+    "korelacje_btc": ["btc_corr_24h", "btc_corr_72h", "btc_corr_change",
+                      "btc_beta_72h", "rel_strength_btc", "corr_breakdown"],
+}
+
+
+def cechy_magazynu_live(symbol: str) -> Dict[str, float]:
+    """Cechy liczone offline do parquet: CVD, przekrojowe, korelacje z BTC.
+
+    POWOD (2026-08-29). Te trzy rodziny liczyly sie w treningu (ml_trainer)
+    i w walidatorze (z cache datasetu), ale NIE w live — `features.py` ich
+    nie znal. Skutek: `ensemble.py:505` robi `features.get(f, 0.0)`, wiec model
+    uczony na tych cechach dostawal na rachunku STALE ZERO. Nie "brak cechy",
+    tylko wejscie spoza rozkladu treningowego — gorsze niz jej nieuzywanie.
+
+    Wykryte na DEV: modele *_cvd handlowaly z trzema martwymi wejsciami przez
+    trzy dni. Sprawdzenie objelo tez pozostale dwie rodziny — brakowalo
+    wszystkich 14 cech.
+
+    Cache per symbol na godzine: dane sa godzinowe, a petla live chodzi co
+    5 minut na 50 symbolach — bez cache to 600 odczytow parquet na godzine.
+
+    Wartosci przy braku pliku sa te same co w treningu (_MAGAZYN_DOMYSLNE),
+    zeby "brak danych" znaczyl po obu stronach dokladnie to samo.
+    """
+    from pathlib import Path as _P
+    import pandas as _pd, numpy as _np, time as _t
+    stem = symbol.split("/")[0].split(":")[0].replace("_", "")
+    now = _t.time()
+    if stem in _MAGAZYN_CACHE and (now - _MAGAZYN_TS.get(stem, 0)) < 3600:
+        return _MAGAZYN_CACHE[stem]
+
+    baza = _P(os.environ.get("HAI_WH", "/root/ProjektHAI/data_warehouse"))
+    out = dict(_MAGAZYN_DOMYSLNE)
+    for kat, kolumny in _MAGAZYN_RODZINY.items():
+        p = baza / kat / f"{stem}.parquet"
+        if not p.exists():
+            continue
+        try:
+            d = _pd.read_parquet(p)
+            if d.empty:
+                continue
+            d = d.sort_values("timestamp")
+            ost = d.iloc[-1]
+            # BRAMKA SWIEZOSCI. Te pliki liczy recznie uruchamiany skrypt
+            # (licz_cechy_*), zadnego crona nie ma. Bez tej kontroli live
+            # czytalby OSTATNI wiersz niezaleznie od jego wieku — sprawdzone
+            # 2026-08-29: korelacje mialy 8 dni, przekrojowe 7. Nieaktualny
+            # rel_strength_btc to nie "brak danych", tylko falszywy sygnal
+            # kierunkowy. Lepiej oddac wartosc neutralna i krzyknac w logu.
+            _wiek_h = (_pd.Timestamp.utcnow().tz_localize(None)
+                       - _pd.to_datetime(ost["timestamp"])).total_seconds() / 3600
+            if _wiek_h > _MAGAZYN_MAX_WIEK_H:
+                logger.error(f"{stem}: {kat} przeterminowane ({_wiek_h:.0f}h > "
+                             f"{_MAGAZYN_MAX_WIEK_H}h) — uzywam wartosci neutralnych. "
+                             f"Przelicz: python3 data_warehouse/licz_{kat.replace('cechy_','cechy_')}.py")
+                continue
+            for k in kolumny:
+                if k in d.columns:
+                    v = ost[k]
+                    if v is not None and _np.isfinite(v):
+                        out[k] = round(float(v), 6)
+        except Exception as e:
+            logger.warning(f"{stem}: {kat} nie wczytane ({e}) — wartosci neutralne")
+
+    _MAGAZYN_CACHE[stem] = out
+    _MAGAZYN_TS[stem] = now
+    return out
+
+
 def build_features_live(
     strategy,
     prices_1h: List[float],
@@ -916,9 +1010,15 @@ def build_features_live(
         except Exception as _re:
             logger.debug(f"rptr features error: {_re}")
 
+        # Cechy magazynowe (CVD / przekrojowe / korelacje BTC) — patrz
+        # cechy_magazynu_live(). Bez nich modele uczone na tych rodzinach
+        # dostawaly w live stale zero przez ensemble.py:505.
+        _mag = cechy_magazynu_live(symbol) if symbol else dict(_MAGAZYN_DOMYSLNE)
+
         return {
             **x_feats,
             **rptr_feats,
+            **_mag,
             "rsi": round(rsi, 2),
             "rsi_4h": round(rsi_4h, 2),
             "rsi_1d": round(rsi_1d, 2),

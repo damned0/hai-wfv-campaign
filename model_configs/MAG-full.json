@@ -1,0 +1,70 @@
+{
+ "name": "MAG-full",
+ "created": "2026-08-29",
+ "description": "ENS-3x-diff + WSZYSTKIE 14 cech magazynowych (CVD + przekrojowe + korelacje BTC). Od 2026-08-29 features.py liczy je takze w LIVE — do tej pory istnialy wylacznie w treningu i walidatorze, a na rachunku ensemble.py:505 podstawial 0.0. Czyli kazdy config z tymi cechami byl dotad NIEWDRAZALNY: walidacja opisywala model, ktorego live nie potrafil odtworzyc. Teraz da sie postawic to, co sie zmierzy.",
+ "models": [
+  "lgb_sniper_6h",
+  "cat_trend_6h",
+  "xgb_rev_6h"
+ ],
+ "expected_weights": "auto (precision-basis)",
+ "feature_mix": {
+  "lgb_sniper_6h": {
+   "add": [
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6",
+    "resid_ret_24h",
+    "resid_ret_4h",
+    "rank_mom_24h",
+    "rank_vol_chg",
+    "event_dekorelacji",
+    "rel_strength_btc",
+    "btc_corr_24h",
+    "btc_corr_72h",
+    "btc_corr_change",
+    "btc_beta_72h",
+    "corr_breakdown"
+   ],
+   "remove": []
+  },
+  "cat_trend_6h": {
+   "add": [
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6",
+    "resid_ret_24h",
+    "resid_ret_4h",
+    "rank_mom_24h",
+    "rank_vol_chg",
+    "event_dekorelacji",
+    "rel_strength_btc",
+    "btc_corr_24h",
+    "btc_corr_72h",
+    "btc_corr_change",
+    "btc_beta_72h",
+    "corr_breakdown"
+   ],
+   "remove": []
+  },
+  "xgb_rev_6h": {
+   "add": [
+    "cvd_z24",
+    "cvd_z6",
+    "delta_pct_ma6",
+    "resid_ret_24h",
+    "resid_ret_4h",
+    "rank_mom_24h",
+    "rank_vol_chg",
+    "event_dekorelacji",
+    "rel_strength_btc",
+    "btc_corr_24h",
+    "btc_corr_72h",
+    "btc_corr_change",
+    "btc_beta_72h",
+    "corr_breakdown"
+   ],
+   "remove": []
+  }
+ }
+}
