@@ -82,7 +82,9 @@ _THRESHOLD_SHORT = None
 # czynnik 0.5-1.5x zalezny od marginesu pewnosci ponad prog decyzyjny -
 # slabe sygnaly (tuz nad progiem) dostaja mniejsza pozycje, mocne wieksza.
 # Nigdy wczesniej nie testowane w calej sesji.
-_CONF_SIZING_ENABLED = False
+_CONF_SIZING_ENABLED = os.environ.get("HAI_CONF_SIZING", "off") != "off"
+# "lin" albo "kwadrat" — patrz komentarz przy uzyciu nizej
+_CONF_SIZING_MODE = os.environ.get("HAI_CONF_SIZING", "off")
 
 # GLEBOKOSC KONSENSUSU (audyt 2026-07-07, K1 z NewHorizonts) - najsilniejszy
 # sygnal w danych: liczba modeli zgodnych z kierunkiem przewiduje WR
@@ -1736,7 +1738,23 @@ class Backtester:
                 scale = PYRAMID_SL_SCALE
             if _CONF_SIZING_ENABLED:
                 _margin = max(0.0, min(1.0, (score / 100 - min_conf) / max(1e-6, 1.0 - min_conf)))
-                scale *= (0.5 + _margin)
+                # FIX 2026-08-30. Bylo `scale *= (0.5 + _margin)`. Margines ma
+                # mediane 0.232 i srednia 0.302, wiec ten mnoznik dawal SREDNIA
+                # WAGE 0.802 — czyli obnizal laczna ekspozycje o 20%. Wlaczenie
+                # flagi wygladaloby na porazke sizingu, a byloby porazka
+                # normalizacji: mierzylibysmy SKALE zamiast KSZTALTU alokacji.
+                # Sam popelnilem ten blad przy pierwszym pomiarze (-17.4%).
+                #
+                # Stale dobrane tak, by srednia waga = 1.00 przy zachowanym dnie
+                # 0.5x. Po normalizacji, na 7390 transakcjach ENS-3x-diff @ ADX 8:
+                #   liniowa     +2.5%      kwadratowa  +7.7%
+                #   odwrotna    -1.7%   <- kontrola: efekt nie jest artefaktem
+                # Kwadratowa wygrywa, bo wiekszosc transakcji siedzi w niskich
+                # przedzialach pewnosci i liniowa za slabo je rozroznia.
+                if _CONF_SIZING_MODE == "kwadrat":
+                    scale *= min(0.5 + 3.4536 * _margin ** 2, 3.0)
+                else:
+                    scale *= min(0.5 + 1.6549 * _margin, 3.0)
             if _CONSENSUS_SIZING and _consensus_depth is not None:
                 scale *= (0.5 + _consensus_depth[i] / _n_cons_models)
             size_usdt = round(self.order_size * scale, 2)
