@@ -1387,6 +1387,15 @@ class Backtester:
             if _cfg_ml.META_LABEL_ENABLED:
                 from .meta_label import load_meta_label
                 _meta = load_meta_label()
+                if _meta is None:
+                    # Cicha awaria wykryta 2026-08-30: gdy META_LABEL_ENABLED=true,
+                    # a pliku meta_label.pkl nie ma (np. nie trafil do repo GH),
+                    # ten warunek po prostu pomijal filtr. Przebieg konczyl sie
+                    # sukcesem i wygladal jak walidacja meta-labelingu, a liczyl
+                    # sie BEZ niego. Teraz to widac w logu.
+                    logger.error("META_LABEL_ENABLED=true, ale meta_label.pkl NIE WCZYTANY "
+                                 "— przebieg leci BEZ meta-labelingu, wynik NIE opisuje "
+                                 "wlaczonej flagi")
                 if _meta is not None:
                     valid_idx = np.where(_valid)[0]
                     if len(valid_idx) > 0:
