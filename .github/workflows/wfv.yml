@@ -31,6 +31,14 @@ on:
         description: "lista progow decyzji, np. 0.20,0.30,0.45 — trening RAZ, symulacja N razy; wyniki jako <config>@t<prog>"
         required: false
         default: ""
+      partial_trigger:
+        description: "ulamek drogi do TP, przy ktorym zamykamy czesc pozycji (domyslnie 0.50)"
+        required: false
+        default: ""
+      partial_frac:
+        description: "jaka czesc pozycji zamknac (domyslnie 0.75)"
+        required: false
+        default: ""
       conf_sizing:
         description: "off / lin / kwadrat — rozmiar pozycji wg pewnosci, ze stala laczna ekspozycja"
         required: false
@@ -149,6 +157,8 @@ jobs:
           if [ -n "${{ inputs.adx_min }}" ]; then export HAI_ADX_MIN="${{ inputs.adx_min }}"; fi
           if [ -n "${{ inputs.size_scale }}" ]; then export HAI_SIZE_SCALE="${{ inputs.size_scale }}"; fi
           if [ -n "${{ inputs.conf_sizing }}" ]; then export HAI_CONF_SIZING="${{ inputs.conf_sizing }}"; fi
+          if [ -n "${{ inputs.partial_trigger }}" ]; then export HAI_PARTIAL_TRIGGER="${{ inputs.partial_trigger }}"; fi
+          if [ -n "${{ inputs.partial_frac }}" ]; then export HAI_PARTIAL_FRAC="${{ inputs.partial_frac }}"; fi
           # Meta-labeling: do 2026-08-30 workflow NIGDY go nie ustawial, wiec
           # wszystkie przebiegi szly BEZ niego, a produkcja handlowala Z NIM.
           # config.py czyta META_LABEL_ENABLED jako "true"/"false".

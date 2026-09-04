@@ -82,6 +82,14 @@ _THRESHOLD_SHORT = None
 # czynnik 0.5-1.5x zalezny od marginesu pewnosci ponad prog decyzyjny -
 # slabe sygnaly (tuz nad progiem) dostaja mniejsza pozycje, mocne wieksza.
 # Nigdy wczesniej nie testowane w calej sesji.
+# Czesciowe zamkniecie: KIEDY (ulamek drogi do TP) i ILE (ulamek pozycji).
+# Zmierzone 2026-09-04 na 345 zywych transakcjach: sredni zysk 0.88, srednia
+# strata 1.06 -> R=0.834, prog oplacalnosci WR 54.5% przy faktycznym 52.2%.
+# Zyski sa ucinane w polowie drogi, straty brane w calosci. Te dwie liczby
+# byly zaszyte na sztywno (0.5 / 0.75) i nigdy nie byly mierzone.
+_PARTIAL_TRIGGER = float(os.environ.get("HAI_PARTIAL_TRIGGER", "0.50"))
+_PARTIAL_FRAC    = float(os.environ.get("HAI_PARTIAL_FRAC", "0.75"))
+
 _CONF_SIZING_ENABLED = os.environ.get("HAI_CONF_SIZING", "off") != "off"
 # "lin" albo "kwadrat" — patrz komentarz przy uzyciu nizej
 _CONF_SIZING_MODE = os.environ.get("HAI_CONF_SIZING", "off")
@@ -1629,7 +1637,8 @@ class Backtester:
                 if not open_pos.get("partial_closed"):
                     # FAZA 1: pelna pozycja. 50% do TP -> partial close 75% wielkosci.
                     # SL nadal chroni CALA pozycje (jak w oryginale).
-                    tp50_p = entry + (tp_p - entry) * 0.5 if side == "LONG" else entry - (entry - tp_p) * 0.5
+                    _tr = _PARTIAL_TRIGGER
+                    tp50_p = entry + (tp_p - entry) * _tr if side == "LONG" else entry - (entry - tp_p) * _tr
                     hit_tp50 = (hi >= tp50_p) if side == "LONG" else (lo <= tp50_p)
                     hit_sl   = (lo <= sl_p) if side == "LONG" else (hi >= sl_p)
                     if hit_tp50 and hit_sl:
@@ -1639,7 +1648,7 @@ class Backtester:
                         _finalize_close(sl_p, "SL", is_sl=True)
                         continue
                     elif hit_tp50:
-                        close_frac = 0.75
+                        close_frac = _PARTIAL_FRAC
                         if side == "LONG":
                             p_pct = (tp50_p - open_pos["entry_eff"]) / open_pos["entry_eff"] * 100
                         else:
