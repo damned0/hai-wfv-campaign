@@ -87,6 +87,14 @@ _THRESHOLD_SHORT = None
 # strata 1.06 -> R=0.834, prog oplacalnosci WR 54.5% przy faktycznym 52.2%.
 # Zyski sa ucinane w polowie drogi, straty brane w calosci. Te dwie liczby
 # byly zaszyte na sztywno (0.5 / 0.75) i nigdy nie byly mierzone.
+# Mnozniki TP/SL w jednostkach ATR. Byly parametrami funkcji (3.5/1.5) i nigdy
+# nie mierzone. Pomiar 2026-09-09 na 36 przegranych z 5-min swiec: MEDIANA
+# przejscia na plus to 0.70 dystansu stopa, czyli ~1.05xATR. Cel 3.5xATR jest
+# wiec ustawiony na ruch, ktorego rynek zwykle nie robi — 31 z 36 przegranych
+# BYLO na plusie, tylko za malo.
+_ATR_TP = float(os.environ.get("HAI_ATR_TP", "3.5"))
+_ATR_SL = float(os.environ.get("HAI_ATR_SL", "1.5"))
+
 _PARTIAL_TRIGGER = float(os.environ.get("HAI_PARTIAL_TRIGGER", "0.50"))
 _PARTIAL_FRAC    = float(os.environ.get("HAI_PARTIAL_FRAC", "0.75"))
 
@@ -1047,8 +1055,8 @@ class Backtester:
         candles_1d: List[Dict],
         symbol: str,
         mode: str = "neutral",
-        atr_tp: float = 3.5,
-        atr_sl: float = 1.5,
+        atr_tp: float = None,
+        atr_sl: float = None,
         enable_pyramid: bool = False,
         enable_cooldown: bool = True,
         enable_daily_limit: bool = True,
@@ -1510,8 +1518,10 @@ class Backtester:
                 entry = open_pos["entry"]
                 side  = open_pos["side"]
                 atr_e = open_pos["atr"]
-                tp_p  = entry + atr_e * atr_tp if side == "LONG" else entry - atr_e * atr_tp
-                sl_p  = entry - atr_e * atr_sl if side == "LONG" else entry + atr_e * atr_sl
+                _tp_m = _ATR_TP if atr_tp is None else atr_tp
+                _sl_m = _ATR_SL if atr_sl is None else atr_sl
+                tp_p  = entry + atr_e * _tp_m if side == "LONG" else entry - atr_e * _tp_m
+                sl_p  = entry - atr_e * _sl_m if side == "LONG" else entry + atr_e * _sl_m
 
                 def _finalize_close(exit_p, result_label, is_sl):
                     nonlocal open_pos, pyramid_pos, consecutive_losses, pyramid_blocked, \
