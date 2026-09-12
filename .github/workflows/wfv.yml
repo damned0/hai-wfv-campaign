@@ -59,6 +59,22 @@ on:
         description: "jaka czesc pozycji zamknac (domyslnie 0.75)"
         required: false
         default: ""
+      min_conf:
+        description: "prog wejscia (nadpisuje strategy.min_confidence, domyslnie 0.20)"
+        required: false
+        default: ""
+      conf_band_lo:
+        description: "dolna granica WYCIETEGO pasma pewnosci, np 0.30 (puste = brak wyciecia)"
+        required: false
+        default: ""
+      conf_band_hi:
+        description: "gorna granica wycietego pasma, np 0.50"
+        required: false
+        default: ""
+      vote_min:
+        description: "minimalny SUROWY glos najmocniejszego modelu za dana strona, np 0.55 (puste = brak filtra)"
+        required: false
+        default: ""
       conf_sizing:
         description: "off / lin / kwadrat — rozmiar pozycji wg pewnosci, ze stala laczna ekspozycja"
         required: false
@@ -184,6 +200,10 @@ jobs:
           if [ -n "${{ inputs.atr_sl }}" ]; then export HAI_ATR_SL="${{ inputs.atr_sl }}"; fi
           if [ -n "${{ inputs.partial_trigger }}" ]; then export HAI_PARTIAL_TRIGGER="${{ inputs.partial_trigger }}"; fi
           if [ -n "${{ inputs.partial_frac }}" ]; then export HAI_PARTIAL_FRAC="${{ inputs.partial_frac }}"; fi
+          if [ -n "${{ inputs.min_conf }}" ]; then export HAI_MIN_CONF="${{ inputs.min_conf }}"; fi
+          if [ -n "${{ inputs.conf_band_lo }}" ]; then export HAI_CONF_BAND_LO="${{ inputs.conf_band_lo }}"; fi
+          if [ -n "${{ inputs.conf_band_hi }}" ]; then export HAI_CONF_BAND_HI="${{ inputs.conf_band_hi }}"; fi
+          if [ -n "${{ inputs.vote_min }}" ]; then export HAI_VOTE_MIN="${{ inputs.vote_min }}"; fi
           # Meta-labeling: do 2026-08-30 workflow NIGDY go nie ustawial, wiec
           # wszystkie przebiegi szly BEZ niego, a produkcja handlowala Z NIM.
           # config.py czyta META_LABEL_ENABLED jako "true"/"false".

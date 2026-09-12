@@ -98,6 +98,19 @@ _ATR_SL = float(os.environ.get("HAI_ATR_SL", "1.5"))
 _PARTIAL_TRIGGER = float(os.environ.get("HAI_PARTIAL_TRIGGER", "0.50"))
 _PARTIAL_FRAC    = float(os.environ.get("HAI_PARTIAL_FRAC", "0.75"))
 
+# === JAKOSC SYGNALU (2026-09-12) ===========================================
+# Zmierzone na 8296 transakcjach Z0: o dowiezieniu pozycji do pelnego celu
+# decyduje SILA NAJMOCNIEJSZEGO glosu, nie zgoda calej trojki.
+#   max glos 0.40-0.55 -> cel 24.7%, stop 12.9%
+#   max glos 0.85+     -> cel 81.4%, stop  1.2%
+# Ciasna zgoda modeli (rozrzut <0.15) ma NAJGORSZY odsetek stopow (11.8%),
+# bo najczesciej znaczy "wszystkie trzy ledwo, po 0.42".
+# Wszystkie cztery domyslnie wylaczone -> sciezka bez zmian.
+_MIN_CONF_OVERRIDE = os.environ.get("HAI_MIN_CONF")
+_CONF_BAND_LO = float(os.environ.get("HAI_CONF_BAND_LO", "0") or 0)
+_CONF_BAND_HI = float(os.environ.get("HAI_CONF_BAND_HI", "0") or 0)
+_VOTE_MIN     = float(os.environ.get("HAI_VOTE_MIN", "0") or 0)
+
 _CONF_SIZING_ENABLED = os.environ.get("HAI_CONF_SIZING", "off") != "off"
 # "lin" albo "kwadrat" — patrz komentarz przy uzyciu nizej
 _CONF_SIZING_MODE = os.environ.get("HAI_CONF_SIZING", "off")
@@ -1077,7 +1090,8 @@ class Backtester:
         strategy = get_strategy("ai_strategy")
         strategy.set_mode(mode)
         min_h = strategy.min_history
-        min_conf = strategy.min_confidence
+        min_conf = (float(_MIN_CONF_OVERRIDE) if _MIN_CONF_OVERRIDE
+                    else strategy.min_confidence)
 
         # audyt 2026-07-05: wartosci dopasowane do strategies/ai_strategy.py
         # (live) - komentarze TAM dokumentuja ze 0.20/0.08 i regime=0 hard-blok
@@ -1482,6 +1496,12 @@ class Backtester:
               ((batch_action == -1) & (stoch_k_arr > 75) & (stoch_d_arr > 75))
         _cpre[_sb] = np.clip(_cpre[_sb] * 1.08, 0.0, 0.99)
         score_arr      = np.where(_valid, np.round(_cpre * 100, 1), 0.0)
+        # Najmocniejszy SUROWY glos pojedynczego modelu za dana strona.
+        # per_model_lp/sp sa pelnej dlugosci (n), wypelniane w petli modeli.
+        _mv_long  = (np.max(np.stack(list(per_model_lp.values())), axis=0)
+                     if per_model_lp else np.zeros(n))
+        _mv_short = (np.max(np.stack(list(per_model_sp.values())), axis=0)
+                     if per_model_sp else np.zeros(n))
         precomp_action = np.where(_valid, batch_action, np.int8(0)).astype(np.int8)
 
         trades: List[Dict]    = []
@@ -1745,6 +1765,16 @@ class Backtester:
                 continue
             score = score_arr[i]
             if score < min_conf * 100:
+                continue
+            # Pasmo wykluczone: na 154 pozycjach live przedzial 0.30-0.50 mial
+            # WR 34.8% wobec 62.0% poza nim (p=0.0022). W walidatorze tego dolka
+            # NIE MA (trafnosc rosnie gladko 88.9 -> 98.2%) — ta kampania
+            # sprawdza, czy przezyje trzy lata danych.
+            if (_CONF_BAND_HI > _CONF_BAND_LO
+                    and _CONF_BAND_LO * 100 <= score < _CONF_BAND_HI * 100):
+                continue
+            # Brak przekonania: zaden pojedynczy model nie jest dosc pewny.
+            if _VOTE_MIN > 0 and (_mv_long[i] if _act == 1 else _mv_short[i]) < _VOTE_MIN:
                 continue
             action = "LONG" if _act == 1 else "SHORT"
 
