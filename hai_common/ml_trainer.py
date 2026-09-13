@@ -1089,6 +1089,19 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
         rsi_1d_arr = np.full(len(closes_1d_all), 50.0)
         trend_1d_arr = np.zeros(len(closes_1d_all), dtype=np.int8)
 
+    # === FIX 2026-09-13: cechy 4h/1d BEZ PRZECIEKU (patrz cechy_tf.py) ===
+    # Wczesniej petla brala searchsorted(times_4h, ts, 'right')-1: swiece 4h/1d,
+    # ktora sie ZACZELA <= ts, z wartoscia z jej KONCOWEGO zamkniecia — model uczyl
+    # sie na cenie z przyszlosci (rsi_4h korelowal z przyszlym ruchem +0.693).
+    # Teraz: dokladnie szereg, jaki widzi silnik na zywo (zamkniete swiece tf +
+    # swieca w toku z biezaca cena 1h), liczony wzorami produkcji.
+    from .cechy_tf import tf_w_toku, MIN_4H, MIN_1D
+    _t1 = np.asarray(times).astype('datetime64[ns]').astype(np.int64)
+    _t4 = np.asarray(times_4h).astype('datetime64[ns]').astype(np.int64)
+    _td = np.asarray(times_1d).astype('datetime64[ns]').astype(np.int64)
+    rsi_4h_live, trend_4h_live = tf_w_toku(closes, _t1, closes_4h_all, _t4, MIN_4H)
+    rsi_1d_live, trend_1d_live = tf_w_toku(closes, _t1, closes_1d_all, _td, MIN_1D)
+
     # === NEW v2.0: PRE-COMPUTE FUNDING (sort raz + searchsorted) ===
     if df_fund is not None and len(df_fund) > 0:
         funding_times = df_fund['timestamp'].values  # juz posortowane przy load
@@ -1232,22 +1245,12 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
 
         # === FEATURES Z 4H (NEW v2.0: searchsorted lookup) ===
         # Znajdz ostatnia swieczke 4h <= ts (binarne wyszukiwanie)
-        idx_4h = np.searchsorted(times_4h, ts, side='right') - 1
-        if idx_4h >= 30:
-            rsi_4h = rsi_4h_arr[idx_4h]
-            trend_4h = trend_4h_arr[idx_4h]
-        else:
-            rsi_4h = 50.0
-            trend_4h = 0
+        rsi_4h = float(rsi_4h_live[i])      # FIX 2026-09-13, bez przecieku
+        trend_4h = int(trend_4h_live[i])
 
         # === FEATURES Z 1D (NEW v2.0: searchsorted lookup) ===
-        idx_1d = np.searchsorted(times_1d, ts, side='right') - 1
-        if idx_1d >= 30:
-            rsi_1d = rsi_1d_arr[idx_1d]
-            trend_1d = trend_1d_arr[idx_1d]
-        else:
-            rsi_1d = 50.0
-            trend_1d = 0
+        rsi_1d = float(rsi_1d_live[i])      # FIX 2026-09-13, bez przecieku
+        trend_1d = int(trend_1d_live[i])
 
         # === FUNDING (NEW v2.0: searchsorted O(log n) zamiast sort O(n log n)) ===
         if has_funding:

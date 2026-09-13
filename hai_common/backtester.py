@@ -976,8 +976,11 @@ class Backtester:
             # ten sam znak), wiec nie da sie go zlapac punktowo; widac go dopiero
             # przy porownaniu FORMUL. trend_1h byl juz liczony poprawnie (EMA/0.3).
             trend_4h_s = _trend_ema_like(c4h)
-            rsi_4h   = _map_tf_to_1h(rsi_4h_s, t4h, t1h, 50.0)
-            trend_4h = _map_tf_to_1h(trend_4h_s, t4h, t1h, 0.0)
+            # FIX 2026-09-13: _map_tf_to_1h dawalo wartosc z KONCOWEGO zamkniecia
+            # swiecy 4h, ktora sie dopiero zaczela — do 3h przyszlosci. Teraz szereg
+            # jak na zywo: zamkniete swiece 4h + swieca w toku (cechy_tf.py).
+            from .cechy_tf import tf_w_toku, MIN_4H
+            rsi_4h, trend_4h = tf_w_toku(c1h, t1h, c4h, t4h, MIN_4H)
         else:
             rsi_4h   = np.full(len(c1h), 50.0)
             trend_4h = np.zeros(len(c1h))
@@ -988,8 +991,9 @@ class Backtester:
             t1d = np.array([c["timestamp"] for c in candles_1d], dtype=np.int64)
             rsi_1d_s = _vec_rsi(c1d, 14)
             trend_1d_s = _trend_ema_like(c1d)   # patrz komentarz przy trend_4h
-            rsi_1d   = _map_tf_to_1h(rsi_1d_s, t1d, t1h, 50.0)
-            trend_1d = _map_tf_to_1h(trend_1d_s, t1d, t1h, 0.0)
+            # FIX 2026-09-13: jak przy 4h — do 23h przyszlosci przez swiece dzienna.
+            from .cechy_tf import tf_w_toku, MIN_1D
+            rsi_1d, trend_1d = tf_w_toku(c1h, t1h, c1d, t1d, MIN_1D)
         else:
             rsi_1d   = np.full(len(c1h), 50.0)
             trend_1d = np.zeros(len(c1h))
