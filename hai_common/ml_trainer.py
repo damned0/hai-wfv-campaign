@@ -42,6 +42,14 @@ logger = logging.getLogger(__name__)
 
 # Sciezki
 WH_BASE = Path(os.environ.get("HAI_WH", "/root/ProjektHAI/data_warehouse")) / 'ohlcv' / 'binance'
+
+# FLAGA BADAWCZA (2026-09-13) — NIE do produkcji. Odtwarza DOKLADNIE sposob, w jaki
+# uczono modele, ktore dzis chodza na zywo: cechy 4h/1d z przeciekiem przyszlosci
+# (searchsorted po czasie otwarcia swiecy tf) i RSI 1h Wilderem. Symulacja
+# (backtester) liczy przy tym uczciwie, jak silnik. Razem daje to konfiguracje
+# identyczna z produkcja i pozwala zmierzyc na 3 latach, czy obecne instancje maja
+# realna przewage — bez tej flagi uczciwy trening daje modele "zawsze NEUTRAL" (H0).
+_JAK_PRODUKCJA = os.environ.get("HAI_TRENING_JAK_PRODUKCJA") == "1"
 MODELS_DIR = Path(__file__).resolve().parent.parent / 'data' / 'models'
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1063,7 +1071,7 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
     # FIX 2026-09-13: bylo calc_rsi (Wilder). Produkcja liczy RSI srednia prosta
     # (AIStrategy.calculate_rsi) — model uczyl sie innej liczby niz dostaje.
     from .cechy_tf import rsi_sma
-    rsi_arr = rsi_sma(closes, RSI_PERIOD)
+    rsi_arr = calc_rsi(closes, RSI_PERIOD) if _JAK_PRODUKCJA else rsi_sma(closes, RSI_PERIOD)
     ema_slow_arr = calc_ema(closes, EMA_SLOW)
     ema_mid_arr = calc_ema(closes, EMA_MID)
     atr_arr = calc_atr(highs, lows, closes, ATR_PERIOD)
@@ -1258,12 +1266,22 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
 
         # === FEATURES Z 4H (NEW v2.0: searchsorted lookup) ===
         # Znajdz ostatnia swieczke 4h <= ts (binarne wyszukiwanie)
-        rsi_4h = float(rsi_4h_live[i])      # FIX 2026-09-13, bez przecieku
-        trend_4h = int(trend_4h_live[i])
+        if _JAK_PRODUKCJA:                  # stary sposob — patrz _JAK_PRODUKCJA
+            idx_4h = np.searchsorted(times_4h, ts, side='right') - 1
+            rsi_4h = rsi_4h_arr[idx_4h] if idx_4h >= 30 else 50.0
+            trend_4h = trend_4h_arr[idx_4h] if idx_4h >= 30 else 0
+        else:
+            rsi_4h = float(rsi_4h_live[i])      # FIX 2026-09-13, bez przecieku
+            trend_4h = int(trend_4h_live[i])
 
         # === FEATURES Z 1D (NEW v2.0: searchsorted lookup) ===
-        rsi_1d = float(rsi_1d_live[i])      # FIX 2026-09-13, bez przecieku
-        trend_1d = int(trend_1d_live[i])
+        if _JAK_PRODUKCJA:
+            idx_1d = np.searchsorted(times_1d, ts, side='right') - 1
+            rsi_1d = rsi_1d_arr[idx_1d] if idx_1d >= 30 else 50.0
+            trend_1d = trend_1d_arr[idx_1d] if idx_1d >= 30 else 0
+        else:
+            rsi_1d = float(rsi_1d_live[i])      # FIX 2026-09-13, bez przecieku
+            trend_1d = int(trend_1d_live[i])
 
         # === FUNDING (NEW v2.0: searchsorted O(log n) zamiast sort O(n log n)) ===
         if has_funding:

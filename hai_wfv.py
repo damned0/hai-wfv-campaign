@@ -58,6 +58,13 @@ DATASET_CACHE = Path(os.environ.get(
     "HAI_WFV_CACHE", str(ROOT / "data_warehouse" / "meta" / "wfv_dataset.parquet")))
 
 HARNESS = "honest_v1"
+# Flaga badawcza (2026-09-13, patrz ml_trainer._JAK_PRODUKCJA): trening jak przy
+# modelach produkcyjnych, z przeciekiem cech 4h/1d. Osobny cache (inna semantyka
+# cech) i osobny harness — wynik NIE jest uczciwym walidatorem i nie moze byc z nim
+# pomylony w zadnym zestawieniu.
+if os.environ.get("HAI_TRENING_JAK_PRODUKCJA") == "1":
+    DATASET_CACHE = DATASET_CACHE.with_name(DATASET_CACHE.stem + "_jak_produkcja.parquet")
+    HARNESS = "jak_produkcja_v1"
 
 # Ilu symboli liczyc rownolegle w symulacji. Na VPS (6 rdzeni) zostaw 6;
 # na RunPodzie (256 rdzeni, 4 shardy) 32 per shard = 128 watkow lacznie.
@@ -279,6 +286,7 @@ def _apply_symbol_whitelist(df):
 # datasetu.
 _ZRODLA_SEMANTYKI = [
     "hai_common/hai_common/ml_trainer.py",
+    "hai_common/hai_common/cechy_tf.py",      # 2026-09-13: cechy 4h/1d, RSI, kontekst BTC
     "data_warehouse/licz_korelacje_btc.py",
     "data_warehouse/licz_cechy_przekrojowe.py",
     "data_warehouse/licz_cechy_cvd.py",
@@ -1108,7 +1116,7 @@ def main():
             "n_holdout": len(hold_windows),
             "max_dd": v.get("max_dd"), "avg_wr": v.get("avg_wr"),
             "avg_trades": v.get("avg_trades"), "weak_windows": v.get("weak_windows"),
-            "decision": v.get("decision"), "harness": HARNESS, "lookahead_safe": 1,
+            "decision": v.get("decision"), "harness": HARNESS, "lookahead_safe": 0 if HARNESS == "jak_produkcja_v1" else 1,
             "sharpe": round(sum(w.get("sharpe_ratio") or 0 for w in windows) / len(windows), 3),
             "run_id": run_id, "train_cutoffs": ",".join(per_window_cutoffs),
             "ingested_at": datetime.now().isoformat(),
@@ -1191,7 +1199,7 @@ def main():
             "avg_pf": v.get("avg_pf"), "min_pf": v.get("min_pf"),
             "max_dd": v.get("max_dd"), "avg_wr": v.get("avg_wr"),
             "avg_trades": v.get("avg_trades"), "weak_windows": v.get("weak_windows"),
-            "decision": v.get("decision"), "harness": HARNESS, "lookahead_safe": 1,
+            "decision": v.get("decision"), "harness": HARNESS, "lookahead_safe": 0 if HARNESS == "jak_produkcja_v1" else 1,
             "run_id": run_id, "train_cutoffs": ",".join(cutoffs),
             "ingested_at": datetime.now().isoformat(),
         }

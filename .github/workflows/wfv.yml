@@ -71,6 +71,10 @@ on:
         description: "gorna granica wycietego pasma, np 0.50"
         required: false
         default: ""
+      trening_jak_produkcja:
+        description: "1 = BADANIE: trening z przeciekiem 4h/1d jak modele produkcyjne, symulacja uczciwa (harness jak_produkcja_v1)"
+        required: false
+        default: ""
       vote_min:
         description: "minimalny SUROWY glos najmocniejszego modelu za dana strona, np 0.55 (puste = brak filtra)"
         required: false
@@ -204,6 +208,7 @@ jobs:
           if [ -n "${{ inputs.conf_band_lo }}" ]; then export HAI_CONF_BAND_LO="${{ inputs.conf_band_lo }}"; fi
           if [ -n "${{ inputs.conf_band_hi }}" ]; then export HAI_CONF_BAND_HI="${{ inputs.conf_band_hi }}"; fi
           if [ -n "${{ inputs.vote_min }}" ]; then export HAI_VOTE_MIN="${{ inputs.vote_min }}"; fi
+          if [ "${{ inputs.trening_jak_produkcja }}" = "1" ]; then export HAI_TRENING_JAK_PRODUKCJA=1; fi
           # Meta-labeling: do 2026-08-30 workflow NIGDY go nie ustawial, wiec
           # wszystkie przebiegi szly BEZ niego, a produkcja handlowala Z NIM.
           # config.py czyta META_LABEL_ENABLED jako "true"/"false".
