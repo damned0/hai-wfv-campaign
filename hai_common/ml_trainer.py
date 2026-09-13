@@ -864,6 +864,7 @@ def _load_btc_context() -> Optional[Dict]:
         return _BTC_CONTEXT_CACHE
     try:
         out = {}
+        _szeregi = {}
         for tf in ['1h', '4h', '1d']:
             p = WH_BASE / tf / 'BTC.parquet'
             df = pd.read_parquet(p)
@@ -871,6 +872,7 @@ def _load_btc_context() -> Optional[Dict]:
             df = df.sort_values('timestamp').reset_index(drop=True)
             closes = df['close'].values.astype(np.float64)
             times = df['timestamp'].values
+            _szeregi[tf] = (closes, times)
             if tf == '1h':
                 trend = precompute_trend_series(closes, EMA_FAST, EMA_SLOW)
                 out['1h_times'] = times
@@ -884,6 +886,14 @@ def _load_btc_context() -> Optional[Dict]:
                 out[f'{tf}_times'] = times
                 out[f'{tf}_rsi'] = rsi
                 out[f'{tf}_trend'] = trend
+        # FIX 2026-09-13: kontekst BTC bez przecieku, wyrownany do swiec 1h BTC.
+        # Stare out['4h_*']/out['1d_*'] zostaja (nieuzywane), petla czyta 'k_*'.
+        from .cechy_tf import kontekst_btc
+        _ns = lambda t: np.asarray(t).astype('datetime64[ns]').astype(np.int64)
+        (c1, t1), (c4, t4), (cd, td) = _szeregi['1h'], _szeregi['4h'], _szeregi['1d']
+        for _k, _v in kontekst_btc(c1, _ns(t1), c4, _ns(t4), cd, _ns(td)).items():
+            out['k_' + _k] = _v
+        out['k_times'] = t1
         _BTC_CONTEXT_CACHE = out
         return out
     except Exception as e:
@@ -1376,17 +1386,18 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
 
         # === BTC CONTEXT (searchsorted per-timeframe - audyt 2026-07-04) ===
         if has_btc:
-            b1_idx = np.searchsorted(btc_ctx['1h_times'], ts, side='right') - 1
-            btc_trend_1h = float(btc_ctx['1h_trend'][b1_idx]) if b1_idx >= 0 else 0.0
-            b4_idx = np.searchsorted(btc_ctx['4h_times'], ts, side='right') - 1
-            if b4_idx >= 0:
-                btc_trend_4h = float(btc_ctx['4h_trend'][b4_idx])
-                btc_rsi_4h = float(btc_ctx['4h_rsi'][b4_idx])
+            # FIX 2026-09-13: bylo searchsorted po czasach 4h/1d — przyszlosc do 23h.
+            # Teraz kontekst liczony z zamknietych swiec + swiecy w toku (cechy_tf),
+            # odczytywany ze swiecy 1h BTC z tej samej godziny.
+            b1_idx = np.searchsorted(btc_ctx['k_times'], ts, side='right') - 1
+            if b1_idx >= 0:
+                btc_trend_1h = float(btc_ctx['k_btc_trend_1h'][b1_idx])
+                btc_trend_4h = float(btc_ctx['k_btc_trend_4h'][b1_idx])
+                btc_rsi_4h = float(btc_ctx['k_btc_rsi_4h'][b1_idx])
+                btc_trend_1d = float(btc_ctx['k_btc_trend_1d'][b1_idx])
             else:
-                btc_trend_4h = 0.0
+                btc_trend_1h = btc_trend_4h = btc_trend_1d = 0.0
                 btc_rsi_4h = 50.0
-            bd_idx = np.searchsorted(btc_ctx['1d_times'], ts, side='right') - 1
-            btc_trend_1d = float(btc_ctx['1d_trend'][bd_idx]) if bd_idx >= 0 else 0.0
         else:
             btc_trend_1h = btc_trend_4h = btc_trend_1d = 0.0
             btc_rsi_4h = 50.0

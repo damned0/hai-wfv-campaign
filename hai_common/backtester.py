@@ -435,6 +435,54 @@ def _load_macro_extended_bt() -> Dict:
     return out
 
 
+_BTC_KONTEKST_BT_CACHE = None
+
+
+def _btc_kontekst_na_1h(t1h: np.ndarray, n: int) -> dict:
+    """Kontekst BTC dla swiec 1h symbolu. t1h w ms albo ns — wykrywane."""
+    zero = {"btc_trend_1h": np.zeros(n), "btc_trend_4h": np.zeros(n),
+            "btc_rsi_4h": np.full(n, 50.0), "btc_trend_1d": np.zeros(n)}
+    tb, k = _btc_kontekst_bt()
+    if tb is None or not k or n == 0:
+        return zero
+    t = np.asarray(t1h, dtype=np.int64)
+    t_ns = t * 1_000_000 if t.max() < 10**14 else t        # ms -> ns
+    idx = np.searchsorted(tb, t_ns, side="right") - 1       # swieca BTC tej godziny
+    ok = idx >= 0
+    idx = np.where(ok, idx, 0)
+    return {name: np.where(ok, arr[idx], zero[name]) for name, arr in k.items()}
+
+
+def _btc_kontekst_bt():
+    """Kontekst BTC (btc_trend_1h/4h, btc_rsi_4h, btc_trend_1d) wyrownany do
+    swiec 1h BTC, liczony cechy_tf.kontekst_btc — ta sama definicja co trening.
+
+    FIX 2026-09-13: walidator tych cech W OGOLE nie liczyl (feat_src.get ->
+    zera), a trening liczyl je z przeciekiem przyszlosci. Model uczyl sie na
+    jednym, w symulacji dostawal drugie, na zywo trzecie.
+    Zwraca (czasy_ns, dict) albo (None, {}) gdy brak danych BTC.
+    """
+    global _BTC_KONTEKST_BT_CACHE
+    if _BTC_KONTEKST_BT_CACHE is not None:
+        return _BTC_KONTEKST_BT_CACHE
+    try:
+        from .cechy_tf import kontekst_btc
+        sz = {}
+        for tf in ("1h", "4h", "1d"):
+            d = pd.read_parquet(WH_BASE / tf / "BTC.parquet")
+            d["timestamp"] = pd.to_datetime(d["timestamp"])
+            d = d.drop_duplicates("timestamp").sort_values("timestamp")
+            sz[tf] = (d["close"].values.astype(np.float64),
+                      d["timestamp"].values.astype("datetime64[ns]").astype(np.int64))
+        k = kontekst_btc(sz["1h"][0], sz["1h"][1], sz["4h"][0], sz["4h"][1],
+                         sz["1d"][0], sz["1d"][1])
+        _BTC_KONTEKST_BT_CACHE = (sz["1h"][1], k)
+    except Exception as e:
+        logger.warning(f"kontekst BTC niedostepny w walidatorze: {e}")
+        _BTC_KONTEKST_BT_CACHE = (None, {})
+    return _BTC_KONTEKST_BT_CACHE
+
+
 def _map_tf_to_1h(series: np.ndarray, times_tf: np.ndarray,
                   times_1h: np.ndarray, default: float = 50.0) -> np.ndarray:
     """Mapuje serię z wyższego timeframe na każdą świecę 1h (latest value ≤ ts)."""
@@ -1029,6 +1077,7 @@ class Backtester:
             "momentum":           roc_10,
             "trend_4h":           trend_4h,
             "trend_1d":           trend_1d,
+            **_btc_kontekst_na_1h(t1h, len(c1h)),
             "volume_ratio":       vol_ratio,
             "funding_rate":       np.zeros(len(c1h)),
             "price_position_bb":  bb_pos,

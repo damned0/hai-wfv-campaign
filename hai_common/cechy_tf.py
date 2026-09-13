@@ -135,3 +135,34 @@ def tf_w_toku(c1h: np.ndarray, t1h: np.ndarray,
     tr = np.where(dp > 0.3, 1.0, np.where(dp < -0.3, -1.0, 0.0))
     trend = np.where(ok_tr, tr, 0.0)
     return rsi, trend
+
+
+def trend_seria(c: np.ndarray) -> np.ndarray:
+    """Trend EMA(9)/EMA(21) +-0.3% dla kazdej swiecy — jak _trend_jak_trening
+    wolany na szeregu c[:i+1] (0 gdy szereg krotszy niz 21)."""
+    c = np.asarray(c, dtype=np.float64)
+    out = np.zeros(len(c))
+    if len(c) < 21:
+        return out
+    ef, es = _ema_rek(c, 9), _ema_rek(c, 21)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dp = np.where(es != 0, (ef - es) / es * 100.0, 0.0)
+    t = np.where(dp > 0.3, 1.0, np.where(dp < -0.3, -1.0, 0.0))
+    out[20:] = t[20:]
+    return out
+
+
+def kontekst_btc(c1h, t1h, c4h, t4h, c1d, t1d) -> dict:
+    """Cechy kontekstu BTC wyrownane do swiec 1h BTC — bez przecieku.
+
+    FIX 2026-09-13. ml_trainer._load_btc_context liczyl btc_trend_4h/btc_rsi_4h/
+    btc_trend_1d tym samym searchsorted(..., 'right')-1 co rsi_4h (przyszlosc
+    do 23h), a produkcja i walidator tych cech W OGOLE nie liczyly — model
+    uczyl sie na przyszlosci, a na zywo dostawal stala. Teraz jedna definicja
+    dla treningu i walidatora; produkcja liczy to samo w features.py z historii
+    BTC, ktora silnik i tak trzyma (BTC jest na liscie symboli).
+    """
+    rsi4, tr4 = tf_w_toku(c1h, t1h, c4h, t4h, MIN_4H)
+    _, tr1d = tf_w_toku(c1h, t1h, c1d, t1d, MIN_1D)
+    return {"btc_trend_1h": trend_seria(c1h), "btc_trend_4h": tr4,
+            "btc_rsi_4h": rsi4, "btc_trend_1d": tr1d}
