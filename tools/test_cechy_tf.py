@@ -9,7 +9,8 @@
 """
 import sys, os, numpy as np, pandas as pd
 sys.path.insert(0, "/root/ProjektHAI/hai_common")
-from hai_common.cechy_tf import tf_w_toku, MIN_4H, MIN_1D
+from hai_common.cechy_tf import tf_w_toku, rsi_sma, MIN_4H, MIN_1D
+from hai_common.strategies.ai_strategy import AIStrategy
 from hai_common.strategies.base import BaseStrategy
 from hai_common.features import _trend_jak_trening
 from scipy.stats import spearmanr
@@ -38,12 +39,18 @@ for sym in ("BTC", "ETH", "SOL", "DOGE", "LINK", "XLM"):
             b = np.searchsorted(tt, t1[i], side="right") - 1
             seria = list(ct[max(0, b - 299):b]) + [c1[i]]    # jak engine: limit 300
             if len(seria) >= mn:
-                r_live = S.calculate_rsi(seria, 14); t_live = _trend_jak_trening(seria)
+                r_live = AIStrategy.calculate_rsi(None, seria, 14); t_live = _trend_jak_trening(seria)
             else:
                 r_live, t_live = 50.0, 0.0
             blad_max = max(blad_max, abs(r_live - rsi[i])); n_test += 1
             if abs(r_live - rsi[i]) > 1e-6 or t_live != tr[i]:
                 zle += 1
+    rs = rsi_sma(c1, 14)
+    for i in rng.choice(np.arange(20, len(c1)), 300, replace=False):
+        rl = AIStrategy.calculate_rsi(None, list(c1[max(0, i - 299):i + 1]), 14)
+        blad_1h = abs(rl - rs[i]); n_test += 1
+        blad_max = max(blad_max, blad_1h)
+        if blad_1h > 1e-6: zle += 1
 print(f"[1] PARYTET: {n_test} porownan z kodem produkcji | max roznica RSI {blad_max:.2e} | niezgodnych {zle}")
 ok1 = zle == 0
 

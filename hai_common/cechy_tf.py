@@ -51,6 +51,37 @@ def _ema_rek(x: np.ndarray, span: int) -> np.ndarray:
     return out
 
 
+def rsi_sma(closes: np.ndarray, period: int = RSI_OKRES) -> np.ndarray:
+    """RSI z 1h jak AIStrategy.calculate_rsi na zywo — dla KAZDEJ swiecy.
+
+    Produkcja: srednia prosta z `period` ostatnich zmian (suma/period), 50 gdy
+    za malo danych, 100 gdy w oknie nie ma ani jednej straty. Trening
+    (ml_trainer.calc_rsi) i walidator (backtester._vec_rsi) liczyly to
+    wygladzaniem Wildera — inna liczba pod ta sama nazwa `rsi` (2026-09-13).
+    Zero strat sprawdzane licznikiem zmian ujemnych, nie roznica sum
+    skumulowanych, bo ta daje 1e-17 zamiast zera i psuje przypadek 100.
+    """
+    c = np.asarray(closes, dtype=np.float64)
+    n = len(c)
+    out = np.full(n, 50.0)
+    if n < period + 1:
+        return out
+    d = np.diff(c)
+    g = np.where(d > 0, d, 0.0)
+    l = np.where(d < 0, -d, 0.0)
+    cg = np.concatenate([[0.0], np.cumsum(g)])
+    cl = np.concatenate([[0.0], np.cumsum(l)])
+    cn = np.concatenate([[0], np.cumsum(d < 0)])
+    i = np.arange(period, n)                 # swieca i: zmiany d[i-period .. i-1]
+    sg = (cg[i] - cg[i - period]) / period
+    sl = (cl[i] - cl[i - period]) / period
+    ujemnych = cn[i] - cn[i - period]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r = np.where(ujemnych == 0, 100.0, 100.0 - 100.0 / (1.0 + sg / sl))
+    out[period:] = r
+    return out
+
+
 def tf_w_toku(c1h: np.ndarray, t1h: np.ndarray,
               ctf: np.ndarray, ttf: np.ndarray, min_swiec: int):
     """rsi i trend interwalu tf dla kazdej swiecy 1h, liczone jak na zywo.

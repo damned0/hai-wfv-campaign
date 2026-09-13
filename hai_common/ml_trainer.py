@@ -1050,7 +1050,10 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
     n = len(closes)
 
     # === PRE-COMPUTE 1H (raz dla calego szeregu) ===
-    rsi_arr = calc_rsi(closes, RSI_PERIOD)
+    # FIX 2026-09-13: bylo calc_rsi (Wilder). Produkcja liczy RSI srednia prosta
+    # (AIStrategy.calculate_rsi) — model uczyl sie innej liczby niz dostaje.
+    from .cechy_tf import rsi_sma
+    rsi_arr = rsi_sma(closes, RSI_PERIOD)
     ema_slow_arr = calc_ema(closes, EMA_SLOW)
     ema_mid_arr = calc_ema(closes, EMA_MID)
     atr_arr = calc_atr(highs, lows, closes, ATR_PERIOD)

@@ -904,7 +904,9 @@ class Backtester:
         t1h = np.array([c["timestamp"] for c in candles_1h], dtype=np.int64)
 
         # ── 1H wskaźniki ──────────────────────────────────────────────
-        rsi_1h   = _vec_rsi(c1h, 14)
+        # FIX 2026-09-13: bylo _vec_rsi (Wilder), produkcja liczy srednia prosta.
+        from .cechy_tf import rsi_sma
+        rsi_1h   = rsi_sma(c1h, 14)
         ema_9    = _vec_ema(c1h, 9)
         ema_21   = _vec_ema(c1h, 21)
         ema_50   = _vec_ema(c1h, 50)
