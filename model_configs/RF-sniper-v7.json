@@ -1,0 +1,32 @@
+{
+  "name": "RF-sniper-v7",
+  "created": "2026-08-06",
+  "description": "RPGC v7 (2026-08-06): WLASNY rdzen 8 + 10 specjalow UNIKALNYCH (przeplyw/likwidacje) = 18 cech. Rdzenie roznia sie (max 5/8 wspolnych), specjaly ZERO nakladania. 6 setow = tyle ile mamy trenowalnych algorytmow.",
+  "models": [
+    "rf_sniper_6h"
+  ],
+  "feature_mix": {
+    "rf_sniper_6h": {
+      "remove": [
+        "trend_1d",
+        "adx_14",
+        "price_position_bb",
+        "bb_bandwidth_pct"
+      ],
+      "add": [
+        "taker_buy_ratio",
+        "r_volume_zscore_50",
+        "x_obv_slope_24h",
+        "e_volume_delta_imbalance",
+        "r_vwap_distance",
+        "vwap_dev",
+        "cvd_x_adx",
+        "dist_above_liq",
+        "dist_below_liq",
+        "bars_cross",
+        "r_stoch_rsi"
+      ]
+    }
+  },
+  "expected_weights": "auto (precision-basis)"
+}
