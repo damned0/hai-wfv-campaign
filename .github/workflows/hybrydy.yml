@@ -1,0 +1,59 @@
+name: HAI WFV hybryd (boost + drzewa, 1 okno na maszyne)
+# 2026-09-14: tools/wfv_hybrydy.py --tylko-okno — w kazdym oknie 6 modeli (LGB/XGB/CAT/ET/RF/HGB) uczonych
+# od nowa na danych sprzed okna. Skladanie hybryd i silnik: na podzie (--polacz) z tym samym --koniec.
+on:
+  workflow_dispatch:
+    inputs:
+      koniec:
+        description: "koniec ostatniego okna (dane w repo do 2026-08-20)"
+        default: "2026-08-14 00:00:00"
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        etykieta: ["6.0,1.5,72,S", "2.5,1.5,48,S"]
+        okno: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt
+      - name: shim /root/ProjektHAI
+        run: |
+          sudo mkdir -p /root && sudo chmod 755 /root
+          sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
+      - name: cechy pochodne (jak kampania WFV)
+        run: |
+          python data_warehouse/licz_korelacje_btc.py
+          python data_warehouse/licz_cechy_przekrojowe.py
+          python data_warehouse/licz_cechy_cvd.py
+      - name: okno
+        env:
+          HAI_ROOT: ${{ github.workspace }}
+          HAI_INSTANCE_DIR: ${{ github.workspace }}
+          HAI_N_PARALLEL: "4"
+          ENS_NJ: "4"
+          OMP_NUM_THREADS: "4"
+        run: |
+          mkdir -p wyniki
+          E="${{ matrix.etykieta }}"; N=$(echo "$E" | tr ',' '_')
+          python -u tools/wfv_hybrydy.py --zbior wyniki/zbior.parquet --przygotowany wyniki/przyg.parquet \
+            --katalog wyniki/hyb_$N --etykieta "$E" --koniec "${{ inputs.koniec }}" \
+            --tylko-okno ${{ matrix.okno }} --procesy 1
+          rm -f wyniki/zbior.parquet wyniki/przyg.parquet
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hybrydy-${{ strategy.job-index }}
+          path: wyniki/
+          retention-days: 30
