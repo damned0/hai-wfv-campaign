@@ -1,0 +1,66 @@
+name: HAI WFV hybryd 4h/6h (lista 100, 1 okno x strona na maszyne)
+# 2026-09-14: krotkie horyzonty jak produkcja (modele 6h). Etykiety: cel 1.0 i 1.5 ATR / stop 1.5 ATR, 4 h i 6 h.
+# Kazda maszyna: jedno okno WFV i jedna strona, 4 etykiety na jednym zbudowanym zbiorze. Skladanie na VPS (--polacz).
+on:
+  workflow_dispatch:
+    inputs:
+      koniec:
+        description: "koniec ostatniego okna (dane w repo do 2026-08-20)"
+        default: "2026-08-14 00:00:00"
+      symbole:
+        description: "whitelista HAI_SYMBOLS (lista 100 bez PONS)"
+        default: "BTC,ETH,BNB,XRP,SOL,TRX,ZEC,HYPE,DOGE,XMR,LINK,ADA,XLM,BCH,LTC,UNI,CC,GRAM,HBAR,AVAX,NEAR,1000SHIB,SUI,TAO,M,BTW,AAVE,ASTER,WLFI,DOT,ONDO,PUMP,ICP,MORPHO,SKY,1000PEPE,ENA,WLD,ETC,LIT,VVV,POL,JST,QNT,KAS,ARB,ALGO,CAKE,ATOM,FIL,JUP,RENDER,DASH,VET,ETHFI,INJ,AERO,CRV,TRUMP,APT,STX,SPX,PENGU,FF,PYTH,VIRTUAL,FET,PENDLE,ZRO,TIA,BSV,NIGHT,AKE,UB,SUN,PIEVERSE,LDO,XTZ,SEI,1000LUNC,MON,KITE,SYRUP,CFX,1000BONK,ENS,1000FLOKI,B,JTO,XPL,OP,GRT,USELESS,COMP,RUNE,AXS,NEO,CHZ,MANA"
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        strona: ["S", "L"]
+        okno: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt
+      - name: shim /root/ProjektHAI
+        run: |
+          sudo mkdir -p /root && sudo chmod 755 /root
+          sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
+      - name: cechy pochodne (jak kampania WFV)
+        run: |
+          python data_warehouse/licz_korelacje_btc.py
+          python data_warehouse/licz_cechy_przekrojowe.py
+          python data_warehouse/licz_cechy_cvd.py
+      - name: okno x 4 etykiety
+        env:
+          HAI_ROOT: ${{ github.workspace }}
+          HAI_INSTANCE_DIR: ${{ github.workspace }}
+          HAI_N_PARALLEL: "4"
+          ENS_NJ: "4"
+          OMP_NUM_THREADS: "4"
+          HAI_SYMBOLS: ${{ inputs.symbole }}
+        run: |
+          mkdir -p wyniki
+          for G in 1.0,1.5 1.5,1.5; do for H in 4 6; do
+            E="$G,$H,${{ matrix.strona }}"; N=$(echo "$E" | tr ',' '_')
+            python -u tools/wfv_hybrydy.py --zbior wyniki/zbior.parquet --przygotowany wyniki/przyg.parquet \
+              --geometrie "1.0,1.5;1.5,1.5" --horyzonty "4,6" \
+              --katalog wyniki/hyb_$N --etykieta "$E" --koniec "${{ inputs.koniec }}" \
+              --tylko-okno ${{ matrix.okno }} --procesy 1
+          done; done
+          rm -f wyniki/zbior.parquet wyniki/przyg.parquet
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: krotkie-${{ matrix.strona }}-${{ matrix.okno }}
+          path: wyniki/
+          retention-days: 30

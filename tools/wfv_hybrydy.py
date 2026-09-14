@@ -29,6 +29,8 @@ ap.add_argument("--zbior", default="", help="GH: zbudowanie --przygotowany z mag
 ap.add_argument("--tylko-okno", type=int, default=0, help="GH: tylko jedno okno (6 modeli) -> okno_NN.parquet, bez skladania")
 ap.add_argument("--polacz", action="store_true", help="bez treningu: sklada okno_*.parquet z --katalog (wyniki z GH)")
 ap.add_argument("--zakresy", default="wl48,wszystkie", help="zakresy symboli silnika: wl48,wszystkie,lista100")
+ap.add_argument("--geometrie", default="", help="GH --zbior: np. '1.0,1.5;1.5,1.5' (puste = 2.5/1.5, 4/1, 6/1.5)")
+ap.add_argument("--horyzonty", default="", help="GH --zbior: np. '4,6' (puste = 24,48,72)")
 a = ap.parse_args()
 NJ = int(os.environ.get("ENS_NJ", "9"))
 TP, SL, HZ, ST = a.etykieta.split(","); TP, SL, HZ = float(TP), float(SL), int(HZ)
@@ -146,28 +148,35 @@ def zadanie(args):
 def main():
     t0 = time.time(); os.makedirs(a.katalog, exist_ok=True)
     if a.zbior and not os.path.exists(a.przygotowany):
-        PZ.GEOMETRIE = [(2.5, 1.5), (4.0, 1.0), (6.0, 1.5)]; PZ.HORYZONTY = [24, 48, 72]   # jak gwaranci_cech
+        PZ.GEOMETRIE = ([tuple(float(x) for x in g.split(",")) for g in a.geometrie.split(";")] if a.geometrie
+                        else [(2.5, 1.5), (4.0, 1.0), (6.0, 1.5)])            # domyslnie jak gwaranci_cech
+        PZ.HORYZONTY = [int(h) for h in a.horyzonty.split(",")] if a.horyzonty else [24, 48, 72]
         PZ.przygotuj(a.zbior, []).to_parquet(a.przygotowany, index=False)
         print(f"zbior przygotowany w {time.time() - t0:.0f} s", flush=True)
     import pyarrow.parquet as pq, re, glob
     wk = re.compile(r"^r_\d+\.\d+_\d+\.\d+_\d+_[LS]$")
-    kol = pq.read_schema(a.przygotowany).names
-    kand = [k for k in kol if not wk.match(k) and not k.startswith(("_", "label_", "trade_", "cel_", "__"))
-            and k not in ("timestamp", "symbol", "close") and k not in PZ.MAKRO_USUNIETE and k not in RYNKOWE]
-    Zs = pd.read_parquet(a.przygotowany, columns=kand + ["_t", "symbol"])
-    Zs = Zs[~Zs.symbol.isin(PZ.MARTWE_COINY)]
-    koniec = pd.Timestamp(a.koniec) if a.koniec else Zs._t.max().normalize() - pd.Timedelta(days=3) - pd.Timedelta(hours=HZ)
-    assert koniec <= Zs._t.max() - pd.Timedelta(hours=HZ), f"--koniec {koniec} za daleko: dane do {Zs._t.max()}"
+    if a.polacz:          # skladanie: bez calego zbioru (moze go nie byc na tej maszynie) — okna z --koniec
+        assert a.koniec, "--polacz wymaga --koniec"
+        koniec = pd.Timestamp(a.koniec); cechy = []
+    else:
+        kol = pq.read_schema(a.przygotowany).names
+        kand = [k for k in kol if not wk.match(k) and not k.startswith(("_", "label_", "trade_", "cel_", "__"))
+                and k not in ("timestamp", "symbol", "close") and k not in PZ.MAKRO_USUNIETE and k not in RYNKOWE]
+        Zs = pd.read_parquet(a.przygotowany, columns=kand + ["_t", "symbol"])
+        Zs = Zs[~Zs.symbol.isin(PZ.MARTWE_COINY)]
+        koniec = pd.Timestamp(a.koniec) if a.koniec else Zs._t.max().normalize() - pd.Timedelta(days=3) - pd.Timedelta(hours=HZ)
+        assert koniec <= Zs._t.max() - pd.Timedelta(hours=HZ), f"--koniec {koniec} za daleko: dane do {Zs._t.max()}"
     starty = [koniec - pd.Timedelta(days=a.dni * k) for k in range(a.okna, 0, -1)]
-    tr0 = Zs[Zs._t < starty[0] - pd.Timedelta(days=a.embargo)]
-    cechy = [k for k in kand if pd.api.types.is_numeric_dtype(Zs[k]) and Zs[k].nunique() > 10 and tr0[k].notna().mean() > 0.5]
-    kor = tr0[cechy].sample(min(200_000, len(tr0)), random_state=3).replace([np.inf, -np.inf], np.nan).rank().corr().abs().fillna(0).to_dict()
-    del Zs, tr0
+    if not a.polacz:
+        tr0 = Zs[Zs._t < starty[0] - pd.Timedelta(days=a.embargo)]
+        cechy = [k for k in kand if pd.api.types.is_numeric_dtype(Zs[k]) and Zs[k].nunique() > 10 and tr0[k].notna().mean() > 0.5]
+        kor = tr0[cechy].sample(min(200_000, len(tr0)), random_state=3).replace([np.inf, -np.inf], np.nan).rank().corr().abs().fillna(0).to_dict()
+        del Zs, tr0
     print(f"WFV hybryd: {len(cechy)} cech coina, {a.okna}x{a.dni} dni {starty[0].date()} -> {koniec.date()}, "
           f"etykieta {KOL}, {a.tx} tx/dzien/48 sym.", flush=True)
     czesci, meta = [], []
     if a.polacz:
-        for f in sorted(glob.glob(f"{a.katalog}/**/okno_*.parquet", recursive=True)):
+        for f in sorted(glob.glob(f"{a.katalog}/**/okno_[0-9][0-9].parquet", recursive=True)):
             czesci.append(pd.read_parquet(f)); meta += json.load(open(f[:-8] + ".json"))
         ok = sorted({int(o) for o in pd.concat(czesci).okno.unique()})
         print(f"polaczono {len(czesci)} plikow okien z {a.katalog}: okna {ok}", flush=True)
@@ -182,6 +191,10 @@ def main():
         if a.tylko_okno:
             f = f"{a.katalog}/okno_{a.tylko_okno:02d}.parquet"
             pd.concat(czesci).to_parquet(f, index=False); json.dump(meta, open(f[:-8] + ".json", "w"), indent=1)
+            # wyniki transakcji wierszy okna — skladanie na innej maszynie nie potrzebuje wtedy calego zbioru
+            st = starty[a.tylko_okno - 1]
+            Wr = pd.read_parquet(a.przygotowany, columns=["symbol", "_t", "_koszt_atr", KOL])
+            Wr[(Wr._t >= st - pd.Timedelta(days=7)) & (Wr._t < st + pd.Timedelta(days=a.dni))].to_parquet(f[:-8] + "_r.parquet", index=False)
             print(f"zapisano {f} ({time.time() - t0:.0f} s)"); return
     json.dump(meta, open(f"{a.katalog}/cechy_okien.json", "w"), indent=1)
     M = pd.DataFrame(meta)
@@ -191,7 +204,11 @@ def main():
     # tabela: wiersz = (symbol, godzina, okno), kolumny = percentyle modeli
     D = pd.concat(czesci).pivot_table(index=["symbol", "_t", "okno"], columns="model", values="pct").reset_index()
     D = D.dropna(subset=list(TYPY))
-    W = pd.read_parquet(a.przygotowany, columns=["symbol", "_t", "_koszt_atr", KOL])
+    pliki_r = sorted(glob.glob(f"{a.katalog}/**/okno_[0-9][0-9]_r.parquet", recursive=True)) if a.polacz else []
+    if pliki_r:
+        W = pd.concat([pd.read_parquet(f) for f in pliki_r]).drop_duplicates(["symbol", "_t"])
+    else:
+        W = pd.read_parquet(a.przygotowany, columns=["symbol", "_t", "_koszt_atr", KOL])
     D = D.merge(W, on=["symbol", "_t"], how="left")
     D = D[D._t >= D.okno.map({nr: st for nr, st in enumerate(starty, 1)})]   # tylko okno (bez tygodnia rozbiegu)
     rodz = lambda s: D[[{v: k for k, v in SKROT.items()}[c] for c in s]].mean(axis=1)
