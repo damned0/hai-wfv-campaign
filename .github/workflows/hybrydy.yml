@@ -1,12 +1,15 @@
 name: HAI WFV hybryd (boost + drzewa, 1 okno na maszyne)
 # 2026-09-14: tools/wfv_hybrydy.py --tylko-okno — w kazdym oknie 6 modeli (LGB/XGB/CAT/ET/RF/HGB) uczonych
-# od nowa na danych sprzed okna. Skladanie hybryd i silnik: na podzie (--polacz) z tym samym --koniec.
+# od nowa na danych sprzed okna. Uniwersum: lista 100 (HAI_SYMBOLS). Skladanie hybryd i silnik: na podzie (--polacz) z tym samym --koniec.
 on:
   workflow_dispatch:
     inputs:
       koniec:
         description: "koniec ostatniego okna (dane w repo do 2026-08-20)"
         default: "2026-08-14 00:00:00"
+      symbole:
+        description: "whitelista HAI_SYMBOLS (domyslnie lista 100 z grupami, 2026-09-14)"
+        default: "BTC,ETH,BNB,XRP,SOL,TRX,ZEC,HYPE,DOGE,XMR,LINK,ADA,XLM,BCH,LTC,UNI,CC,GRAM,HBAR,AVAX,NEAR,1000SHIB,SUI,TAO,M,BTW,AAVE,ASTER,WLFI,DOT,ONDO,PUMP,ICP,MORPHO,SKY,1000PEPE,ENA,WLD,ETC,LIT,VVV,POL,JST,QNT,KAS,ARB,ALGO,CAKE,ATOM,FIL,JUP,RENDER,DASH,VET,ETHFI,INJ,AERO,CRV,TRUMP,APT,STX,SPX,PENGU,FF,PYTH,VIRTUAL,PONS,FET,PENDLE,ZRO,TIA,BSV,NIGHT,AKE,UB,SUN,PIEVERSE,LDO,XTZ,SEI,1000LUNC,MON,KITE,SYRUP,CFX,1000BONK,ENS,1000FLOKI,B,JTO,XPL,OP,GRT,USELESS,COMP,RUNE,AXS,NEO,CHZ,MANA"
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -43,6 +46,7 @@ jobs:
           HAI_INSTANCE_DIR: ${{ github.workspace }}
           HAI_N_PARALLEL: "4"
           ENS_NJ: "4"
+          HAI_SYMBOLS: ${{ inputs.symbole }}
           OMP_NUM_THREADS: "4"
         run: |
           mkdir -p wyniki

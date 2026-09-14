@@ -24,7 +24,7 @@ ap.add_argument("--tp", type=float, default=0.0); ap.add_argument("--sl", type=f
 ap.add_argument("--z-plikow", nargs="*", default=[],
                 help="zamiast symulacji: polacz transakcje z wczesniejszych przebiegow (np. dwie reguly, "
                      "kazda z wlasna geometria) i policz portfel/warstwy na calosci")
-ap.add_argument("--symbole", default="wl48", help="wl48 | wszystkie")
+ap.add_argument("--symbole", default="wl48", help="wl48 | wszystkie | lista100")
 ap.add_argument("--procesy", type=int, default=3)
 ap.add_argument("--od", default="2024-11-07")
 ap.add_argument("--wyniki", required=True)
@@ -56,10 +56,29 @@ def jeden(sym):
              if k not in ("feature_snapshot", "model_votes")} for t in tr if t["open_ts"] >= OD_MS]
 
 
-def portfel(T, limit=10, limit_kier=None, btc_filtr=False, fomc=False, btc=None):
-    """Chronologicznie: wejscie przyjete, gdy jest miejsce w portfelu i przechodzi warstwy."""
+LISTA100 = "/root/ProjektHAI/data_warehouse/meta/lista_100_coinow_20260914.csv"
+
+
+def grupy_listy100():
+    """coin z listy 100 -> nazwa w magazynie (coin albo 1000coin) i grupa (klaster korelacji reszt)."""
+    L = pd.read_csv(LISTA100)
+    naz = {p.stem for p in (WH_BASE / "1h").glob("*.parquet")}
+    out = {}
+    for c, g in zip(L.coin.astype(str).str.upper(), L.grupa):
+        for n in (c, "1000" + c):
+            if n in naz:
+                out[n] = int(g) if pd.notna(g) else f"bez_grupy_{c}"; break   # PONS: za krotka historia na klaster
+    return out
+
+
+GRUPY = grupy_listy100() if os.path.exists(LISTA100) else {}
+
+
+def portfel(T, limit=10, limit_kier=None, btc_filtr=False, fomc=False, btc=None, limit_grupy=None):
+    """Chronologicznie: wejscie przyjete, gdy jest miejsce w portfelu i przechodzi warstwy.
+    limit_grupy: maks. tyle otwartych pozycji z tej samej grupy listy 100 (decyzja uzytkownika 2026-09-14: 2 na 10)."""
     T = T.sort_values(["open_ts", "symbol"]).reset_index(drop=True)
-    otwarte = []   # (close_ts, side)
+    otwarte = []   # (close_ts, side, grupa)
     wziete = np.zeros(len(T), bool); powod = np.array([""] * len(T), dtype=object)
     for i, r in T.iterrows():
         otwarte = [o for o in otwarte if o[0] > r.open_ts]
@@ -73,7 +92,10 @@ def portfel(T, limit=10, limit_kier=None, btc_filtr=False, fomc=False, btc=None)
             powod[i] = "limit_portfela"; continue
         if limit_kier is not None and sum(1 for o in otwarte if o[1] == r.side) >= limit_kier:
             powod[i] = "risk_kierunek"; continue
-        otwarte.append((r.close_ts, r.side)); wziete[i] = True
+        gr = GRUPY.get(r.symbol, "poza_lista_" + r.symbol)
+        if limit_grupy is not None and sum(1 for o in otwarte if o[2] == gr) >= limit_grupy:
+            powod[i] = "limit_grupy"; continue
+        otwarte.append((r.close_ts, r.side, gr)); wziete[i] = True
     return T[wziete], pd.Series(powod[~wziete]).value_counts().to_dict()
 
 
@@ -94,6 +116,9 @@ if __name__ == "__main__":
     if a.symbole == "wl48":
         from hai_common.symbols import TRADING_SYMBOLS
         symbole = [s.split("/")[0] for s in TRADING_SYMBOLS]
+    elif a.symbole == "lista100":
+        symbole = sorted(GRUPY)
+        print(f"lista 100: {len(symbole)} coinow z historia w magazynie, {len(set(GRUPY.values()))} grup", flush=True)
     else:
         from poszukiwania import MARTWE_COINY   # zdjete z gield, zamrozone ceny (2026-09-14)
         symbole = sorted(p.stem for p in (WH_BASE / "1h").glob("*.parquet") if p.stem not in MARTWE_COINY)
@@ -132,6 +157,7 @@ if __name__ == "__main__":
           f"{pd.Timestamp(OD_MS, unit='ms').date()} -> {pd.Timestamp(T.close_ts.max(), unit='ms').date()} ({dni:.0f} dni)")
     warianty = [("bez limitu portfela (kazdy sygnal)", dict(limit=10**6)),
                 ("limit 10 pozycji (jak LIV)", dict(limit=10)),
+                ("limit 10 + maks. 2 z grupy (lista 100)", dict(limit=10, limit_grupy=2)),
                 ("Risk: maks. 5 w jednym kierunku", dict(limit=10, limit_kier=5)),
                 ("Risk: short tylko gdy BTC pod EMA200", dict(limit=10, btc_filtr=True)),
                 ("Macro: bez wejsc +-12 h wokol FOMC", dict(limit=10, fomc=True)),

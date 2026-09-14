@@ -28,6 +28,7 @@ ap.add_argument("--koniec", default="", help="koniec ostatniego okna (te same ok
 ap.add_argument("--zbior", default="", help="GH: zbudowanie --przygotowany z magazynu, gdy go nie ma")
 ap.add_argument("--tylko-okno", type=int, default=0, help="GH: tylko jedno okno (6 modeli) -> okno_NN.parquet, bez skladania")
 ap.add_argument("--polacz", action="store_true", help="bez treningu: sklada okno_*.parquet z --katalog (wyniki z GH)")
+ap.add_argument("--zakresy", default="wl48,wszystkie", help="zakresy symboli silnika: wl48,wszystkie,lista100")
 a = ap.parse_args()
 NJ = int(os.environ.get("ENS_NJ", "9"))
 TP, SL, HZ, ST = a.etykieta.split(","); TP, SL, HZ = float(TP), float(SL), int(HZ)
@@ -226,7 +227,7 @@ def main():
     for nm in [r.konfig for r in R.itertuples() if r.ev > 0][:6]:
         f = f"{a.katalog}/sygnaly_{nm.replace('|', '_').replace('+', 'p').replace('*', '')}.parquet"
         syg[nm].to_parquet(f, index=False)
-        for zakres in ("wl48", "wszystkie"):
+        for zakres in a.zakresy.split(","):
             print(f"\n######## SILNIK: {nm}, symbole {zakres}", flush=True)
             subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_regul_silnik.py"),
                             "--regula", "plik", "--plik", f, "--tp", str(TP), "--sl", str(SL), "--od", str(starty[0].date()),
