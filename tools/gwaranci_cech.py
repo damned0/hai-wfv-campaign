@@ -27,6 +27,13 @@ ap.add_argument("--zbior", default="", help="surowy zbior ml_trainer (budowany, 
 ap.add_argument("--tylko", default="", help="jedna etykieta 'tp,sl,hz,strona' bez puli procesow (GitHub: 1 zadanie = 1 maszyna)")
 ap.add_argument("--wyniki", required=True); ap.add_argument("--procesy", type=int, default=18)
 ap.add_argument("--rho", type=float, default=0.5); ap.add_argument("--ile", type=int, default=15)
+ap.add_argument("--modele", default="cat,xgb,lgb", help="cat,xgb,lgb (boostingi, z gwarantami SHAP) i/lub et,rf,hgb (drzewa)")
+ap.add_argument("--warianty", default="zwykly,zr", help="zwykly i/lub zr (zrownowazony po rezimie rynku)")
+ap.add_argument("--wiersze", type=int, default=1_000_000, help="maks. wierszy treningu")
+ap.add_argument("--tylko-coin", action="store_true",
+                help="bez cech wspolnych dla calego rynku w danej chwili (model ma wybierac COINA, nie dzien/godzine)")
+RYNKOWE = ("fear_greed", "btc_trend_1h", "btc_trend_4h", "btc_trend_1d", "btc_rsi_4h", "btc_dominance_chg",
+           "hour_sin", "hour_cos", "day_of_week", "x_weekend")
 a = ap.parse_args()
 PZ.GEOMETRIE = [(2.5, 1.5), (4.0, 1.0), (6.0, 1.5)]
 PZ.HORYZONTY = [24, 48, 72]
@@ -44,8 +51,40 @@ def zbuduj(typ):
         import xgboost as xgb
         return xgb.XGBClassifier(n_estimators=300, learning_rate=0.03, max_depth=6, subsample=0.8,
                                  colsample_bytree=0.8, min_child_weight=50, n_jobs=NJ, verbosity=0)
+    if typ == "et":
+        from sklearn.ensemble import ExtraTreesClassifier
+        return ExtraTreesClassifier(n_estimators=200, max_depth=12, min_samples_leaf=200, max_features="sqrt",
+                                    n_jobs=NJ, random_state=1)
+    if typ == "rf":
+        from sklearn.ensemble import RandomForestClassifier
+        return RandomForestClassifier(n_estimators=200, max_depth=12, min_samples_leaf=200, max_features="sqrt",
+                                      max_samples=0.5, n_jobs=NJ, random_state=1)
+    if typ == "hgb":
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        return HistGradientBoostingClassifier(max_iter=300, learning_rate=0.05, max_leaf_nodes=31,
+                                              min_samples_leaf=300, random_state=1)
     from catboost import CatBoostClassifier
     return CatBoostClassifier(iterations=300, learning_rate=0.05, depth=6, verbose=0, thread_count=NJ)
+
+
+DRZEWA = ("et", "rf", "hgb")
+
+
+def waznosc(m, typ, X, y):
+    """Waznosc cech do przecechowania: SHAP (boostingi), impurity (ET/RF), permutacyjna (HGB)."""
+    if typ in DRZEWA:
+        if typ in ("et", "rf"):
+            return np.asarray(m.feature_importances_)
+        from sklearn.inspection import permutation_importance
+        n = min(20_000, len(X))
+        return permutation_importance(m, X.iloc[:n], y.iloc[:n], n_repeats=2, random_state=1,
+                                      n_jobs=min(NJ, 8), scoring="roc_auc").importances_mean
+    return np.abs(shap(m, typ, X)[0]).mean(axis=0)
+
+
+def przygotuj_X(X, typ):
+    # ET/RF: zera zamiast NaN (jak w poszukiwania.py — sklearn-owe lasy nie wszedzie przyjmuja NaN)
+    return X.fillna(0) if typ in ("et", "rf") else X
 
 
 def shap(m, typ, X):
@@ -80,8 +119,8 @@ def zadanie(args):
     sel, spr = PZ.podziel(Z)
     if len(sel) > 1_500_000:
         sel = sel.sample(1_500_000, random_state=1)
-    if len(sel) > 1_000_000:
-        sel = sel.sample(1_000_000, random_state=2)      # 27 vCPU na podzie — 1 mln wierszy wystarcza
+    if len(sel) > a.wiersze:
+        sel = sel.sample(a.wiersze, random_state=2)      # 27 vCPU na podzie — ograniczamy trening
     y = (sel[kol] > 0).astype(int); baza = (spr[kol] > 0).mean()
     # waga "zrownowazona": laczna waga wzrostow = waga spadkow (model nie moze nauczyc sie samego kierunku rynku)
     cz = sel["_rez"].value_counts()
@@ -91,21 +130,24 @@ def zadanie(args):
     wyniki, gwaranci = [], []
     import joblib
     os.makedirs(MODELE_DIR, exist_ok=True)
-    for typ in ("cat", "xgb", "lgb"):
-        # 1. przecechowanie: model na wszystkich cechach -> waznosc SHAP -> zachlannie bez dubli
-        m0 = zbuduj(typ); m0.fit(sel[cechy], y)
-        waz = np.abs(shap(m0, typ, prob[cechy])[0]).mean(axis=0)
+    for typ in [t for t in a.modele.split(",") if t]:
+        # 1. przecechowanie: model na wszystkich cechach -> waznosc -> zachlannie bez dubli
+        m0 = zbuduj(typ); m0.fit(przygotuj_X(sel[cechy], typ), y)
+        py = (prob[kol] > 0).astype(int)
+        waz = waznosc(m0, typ, przygotuj_X(prob[cechy], typ), py)
         wyb = []
         for j in np.argsort(-waz):
             if all(kor[cechy[j]][g] <= a.rho for g in wyb):
                 wyb.append(cechy[j])
             if len(wyb) == a.ile:
                 break
+        waz_wyb = "|".join(f"{c}:{waz[cechy.index(c)]:.4f}" for c in wyb)
         # 2. model na wybranych cechach: zwykly i zrownowazony po rezimach rynku
         dni = (spr._t.max() - spr._t.min()).days; n_sym = spr.symbol.nunique()
-        for wariant, wagi in ((typ, None), (typ + "_zr", w_zr)):
-          m = zbuduj(typ); m.fit(sel[wyb], y, sample_weight=wagi)
-          p = m.predict_proba(spr[wyb])[:, 1]
+        warianty = [(typ, None)] * ("zwykly" in a.warianty) + [(typ + "_zr", w_zr)] * ("zr" in a.warianty)
+        for wariant, wagi in warianty:
+          m = zbuduj(typ); m.fit(przygotuj_X(sel[wyb], typ), y, sample_weight=wagi)
+          p = m.predict_proba(przygotuj_X(spr[wyb], typ))[:, 1]
           joblib.dump({"model": m, "cechy": wyb, "etykieta": (tp, sl, hz, st), "typ": typ, "wariant": wariant},
                       f"{MODELE_DIR}/{wariant}_{tp}_{sl}_{hz}_{st}.pkl")
           for tx in (10, 15):
@@ -125,8 +167,8 @@ def zadanie(args):
               wyniki.append(dict(tp=tp, sl=sl, hz=hz, strona=st, model=wariant, tx_dzien=tx, **rz, n=len(wz), n_dni=len(uniq),
                                  wr=(r > 0).mean(), wr_geometrii=baza, przewaga_wr=(r > 0).mean() - baza,
                                  ev=ev.mean(), ev_p05_dni=np.percentile(bs, 5), kw_plus=int((kw > 0).sum()),
-                                 kw_n=len(kw), cechy="|".join(wyb)))
-              if tx != 10:
+                                 kw_n=len(kw), cechy="|".join(wyb), waznosc_wybranych=waz_wyb))
+              if tx != 10 or typ in DRZEWA:     # gwaranci SHAP tylko dla boostingow (natywny SHAP)
                   continue
               # 3. gwaranci: SHAP dla kazdej wybranej transakcji
               wk, marg = shap(m, typ, wz[wyb])
@@ -160,6 +202,7 @@ def main():
     os.environ["POSZ_CIECIE"] = os.environ.get("POSZ_CIECIE_STALE") or str(Z["_t"].quantile(0.6))
     sel, _ = PZ.podziel(Z)
     cechy = [k for k in Z.columns if not k.startswith("_") and k != "symbol" and k not in PZ.MAKRO_USUNIETE
+             and not (a.tylko_coin and k in RYNKOWE)
              and pd.api.types.is_numeric_dtype(Z[k]) and Z[k].nunique() > 10 and sel[k].notna().mean() > 0.5]
     prob = sel[cechy].sample(min(200_000, len(sel)), random_state=3).replace([np.inf, -np.inf], np.nan)
     kor = prob.rank().corr().abs().fillna(0).to_dict()
@@ -197,6 +240,8 @@ def main():
     print("\n=== SHORTY w rynku ROSNACYM (czy model wybiera coiny, a nie tylko kierunek rynku) ===")
     sh = W[(W.strona == "S") & (W.n_wzrost >= 30)].copy(); sh["przewaga_wzrost"] = sh.wr_wzrost - sh.wr_geom_wzrost
     print(sh.sort_values("ev_wzrost", ascending=False)[k].head(10).round(3).to_string(index=False))
+    if not len(G):
+        print(f"\n(brak gwarantow SHAP — drzewa ET/RF/HGB ich nie licza)\ncalosc {time.time() - t0:.0f} s"); return
     print("\n=== GWARANCI: cechy najczesciej decydujace o wejsciu (srednio po etykietach i modelach) ===")
     g = G.groupby("cecha").agg(ile_razy=("cecha", "size"), udzial=("udzial_decydujaca", "mean"),
                                wr_decyd=("wr_gdy_decydujaca", "mean"), wr_nie=("wr_gdy_nie", "mean"),

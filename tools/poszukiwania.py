@@ -103,6 +103,9 @@ def przygotuj(zbior, symbole):
 
 
 EMBARGO_DNI = 7
+# 2026-09-14 (decyzja uzytkownika): coiny zdjete z Binance / przemianowane — w swiecach tysiace godzin
+# zamrozonej ceny (tools/kontrola_danych.py). Wykluczone ze wszystkich testow, usuniete z magazynu.
+MARTWE_COINY = ("WAVES", "OCEAN", "FTM", "OMG", "MKR", "TON", "ICX", "STORJ")
 
 
 def podziel(Z):
@@ -117,6 +120,8 @@ def podziel(Z):
     EMBARGO_DNI przerwy, zeby etykiety 48h treningu nie siegaly w test.
     """
     D = pd.Timestamp(os.environ["POSZ_CIECIE"])
+    if "symbol" in Z.columns:
+        Z = Z[~Z.symbol.isin(MARTWE_COINY)]
     return Z[Z._t < D], Z[Z._t >= D + pd.Timedelta(days=EMBARGO_DNI)]
 
 
