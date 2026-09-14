@@ -95,7 +95,7 @@ SD_SPEC_FEATURES = [
 #  - plac:  6 losowych ISTNIEJACYCH cech -> czysty efekt diversity/re-wazenia
 SD_ABL_FEATURES = ["atr_pct", "adx_14", "rsi_4h", "price_position_bb"]
 PLACEBO_FEATURES = ["volume_zscore", "macd_hist", "ema_fast_r",
-                    "us10y_chg", "gold_chg", "hour_cos"]
+                    "rsi_1d", "sr_dist_pct", "hour_cos"]   # 2026-09-14: bylo us10y_chg/gold_chg (makro wyciete)
 # Profil SNIPER (cat_sniper/lgb_sniper itd., deploy 2026-08-01). Zestaw 11 cech
 # z produkcji model_registry/gen.SNPR/6h/cat_sniper_6h.pkl, etykieta fast6h.
 SNIPER_FEATURES = [

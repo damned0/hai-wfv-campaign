@@ -826,7 +826,13 @@ def _load_fear_greed() -> Optional[pd.DataFrame]:
 
 
 _MACRO_EXT_CACHE = None
-_MACRO_EXT_TICKERS = ['gold', 'oil_wti', 'sp500', 'vix', 'us10y_yield', 'dxy', 'btc_dominance']
+# 2026-09-14 WYCIETE na polecenie uzytkownika: gold/oil_wti/sp500/vix/us10y/dxy (FRED/tradfi).
+# Potwierdzony szum juz 2026-08-06, ale usunieto je wtedy tylko z MODEL_FEATURES — zbior dalej
+# je liczyl i wyszukiwania 13-14.09 wybraly je jako "najtrafniejsze" (ta sama wartosc dla
+# wszystkich coinow danego dnia = model zgaduje DZIEN, nie coina; ET: 79% waznosci na makro).
+# Zostaje btc_dominance (krypto, osobny sygnal — decyzja z 2026-08-06).
+_MACRO_EXT_TICKERS = ['btc_dominance']
+MAKRO_USUNIETE = ('gold_chg', 'oil_wti_chg', 'sp500_chg', 'vix_chg', 'us10y_chg', 'dxy_chg')
 
 
 def _load_macro_extended() -> Dict:
@@ -1601,15 +1607,8 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
             'btc_trend_4h': float(btc_trend_4h),
             'btc_trend_1d': float(btc_trend_1d),
             'btc_rsi_4h': float(btc_rsi_4h),
-            # Macro extended: Gold/Oil/SP500/VIX/US10Y/DXY/BTC dominance
-            # (zmiana % dzien-do-dnia, audyt 2026-07-05 - "te dane tez tylko
-            # szumialy ale dobra daj je")
-            'gold_chg': macro_vals['gold'],
-            'oil_wti_chg': macro_vals['oil_wti'],
-            'sp500_chg': macro_vals['sp500'],
-            'vix_chg': macro_vals['vix'],
-            'us10y_chg': macro_vals['us10y_yield'],
-            'dxy_chg': macro_vals['dxy'],
+            # Macro: tylko BTC dominance (gold/oil/sp500/vix/us10y/dxy wyciete 2026-09-14,
+            # patrz MAKRO_USUNIETE)
             'btc_dominance_chg': macro_vals['btc_dominance'],
             # Label (glowny + warianty specjalistow, audyt 2026-07-04)
             'label_long': int(label_long),

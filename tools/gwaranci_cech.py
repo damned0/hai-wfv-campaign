@@ -159,7 +159,7 @@ def main():
     # inaczej 60. percentyl czasu przesuwa podzial i wyniki GH/poda nie sa porownywalne.
     os.environ["POSZ_CIECIE"] = os.environ.get("POSZ_CIECIE_STALE") or str(Z["_t"].quantile(0.6))
     sel, _ = PZ.podziel(Z)
-    cechy = [k for k in Z.columns if not k.startswith("_") and k != "symbol"
+    cechy = [k for k in Z.columns if not k.startswith("_") and k != "symbol" and k not in PZ.MAKRO_USUNIETE
              and pd.api.types.is_numeric_dtype(Z[k]) and Z[k].nunique() > 10 and sel[k].notna().mean() > 0.5]
     prob = sel[cechy].sample(min(200_000, len(sel)), random_state=3).replace([np.inf, -np.inf], np.nan)
     kor = prob.rank().corr().abs().fillna(0).to_dict()

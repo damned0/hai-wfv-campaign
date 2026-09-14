@@ -28,6 +28,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 logging.disable(logging.WARNING)
 ROOT = os.environ.get("HAI_ROOT", "/root/ProjektHAI")
 sys.path.insert(0, ROOT); sys.path.insert(0, f"{ROOT}/hai_common")
+try:   # makro tradfi wyciete 2026-09-14 — stare zbiory na dysku wciaz maja te kolumny
+    from hai_common.ml_trainer import MAKRO_USUNIETE
+except Exception:
+    MAKRO_USUNIETE = ('gold_chg', 'oil_wti_chg', 'sp500_chg', 'vix_chg', 'us10y_chg', 'dxy_chg')
 
 GEOMETRIE = [(0.6, 1.5), (0.8, 1.5), (1.0, 1.5), (1.2, 1.5), (2.5, 1.5), (4.0, 1.0)]
 HORYZONTY = [3, 6, 12, 24, 48]
@@ -45,7 +49,7 @@ RODZINY = {
                   "trend_1d", "rsi_4h", "rsi_1d", "bars_cross", "e_tk_cross", "e_ichimoku_cloud_thickness",
                   "dist_above_liq", "dist_below_liq", "hour_cos"],
     "makro_deryw": ["funding_rate", "funding_change_24h", "oi_change_24h", "oi_zscore_30d", "oi_total_log",
-                    "ls_ratio", "ls_ratio_chg_24h", "dxy_chg", "vix_chg", "sp500_chg", "us10y_chg",
+                    "ls_ratio", "ls_ratio_chg_24h",   # dxy/vix/sp500/us10y wyciete 2026-09-14
                     "btc_dominance_chg", "btc_corr_24h", "btc_beta_72h", "rel_strength_btc"],
 }
 
@@ -224,7 +228,8 @@ def main():
     os.environ["POSZ_CIECIE"] = str(Z["_t"].quantile(0.6))   # dziedzicza procesy 'spawn'
     print(f"podzial kalendarzowy: trening < {os.environ['POSZ_CIECIE']}, test od +{EMBARGO_DNI} dni", flush=True)
     wszystkie = [k for k in Z.columns if not k.startswith(("_", "r_", "label_", "trade_", "cel_"))
-                 and k not in ("timestamp", "symbol", "close") and np.issubdtype(Z[k].dtype, np.number) and Z[k].nunique() > 2]
+                 and k not in ("timestamp", "symbol", "close") and k not in MAKRO_USUNIETE
+                 and np.issubdtype(Z[k].dtype, np.number) and Z[k].nunique() > 2]
     from sklearn.metrics import roc_auc_score
     zadania = []
     if a.etap == "A":
