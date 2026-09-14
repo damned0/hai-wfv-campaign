@@ -32,6 +32,11 @@ try:   # makro tradfi wyciete 2026-09-14 — stare zbiory na dysku wciaz maja te
     from hai_common.ml_trainer import MAKRO_USUNIETE
 except Exception:
     MAKRO_USUNIETE = ('gold_chg', 'oil_wti_chg', 'sp500_chg', 'vix_chg', 'us10y_chg', 'dxy_chg')
+# 2026-09-14: funding z Coinalyze ma znacznik 00:00 i wartosc z konca doby (przeciek do 24 h, tools/test_fundingu.py).
+# Naprawa w zbiorze: tools/napraw_funding.py (D+1, jednostki /100). Na starym, skazonym zbiorze: POSZ_BEZ_FUNDINGU=1.
+FUNDING_SKAZONE = ('funding_rate', 'funding_change_24h', 'e_rsi_x_funding', 'funding_x_oizscore')
+if os.environ.get("POSZ_BEZ_FUNDINGU") == "1":
+    MAKRO_USUNIETE = tuple(MAKRO_USUNIETE) + FUNDING_SKAZONE
 
 GEOMETRIE = [(0.6, 1.5), (0.8, 1.5), (1.0, 1.5), (1.2, 1.5), (2.5, 1.5), (4.0, 1.0)]
 HORYZONTY = [3, 6, 12, 24, 48]
