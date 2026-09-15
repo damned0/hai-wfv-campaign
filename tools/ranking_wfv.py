@@ -25,7 +25,7 @@ ap.add_argument("--horyzont", type=int, default=6, help="h trzymania i celu; co-
 ap.add_argument("--uczen", action="store_true", help="nauczyciel z podgladem przyszlosci -> uczen na cechach uczciwych (+ model zwykly do porownania)")
 ap.add_argument("--kol", default="pred", help="--polacz: ktora kolumne prognozy oceniac (pred / pred_zwykly)")
 a = ap.parse_args()
-if a.co_ile == 6 and a.horyzont != 6: a.co_ile = a.horyzont
+if a.co_ile == 6 and a.horyzont != 6: a.co_ile = min(a.horyzont, 24)
 ROOT = os.environ.get("HAI_ROOT", "/root/ProjektHAI")
 sys.path.insert(0, ROOT if os.path.exists(f"{ROOT}/hai_common/ml_trainer.py") else f"{ROOT}/hai_common")   # repo GH: pakiet w korzeniu
 os.makedirs(a.katalog, exist_ok=True)
@@ -123,8 +123,12 @@ def ocen(P):
     wyn = []
     rng = np.random.default_rng(0)
     for k in ks:
-        for tryb in ("model", "losowo"):
-            if tryb == "model":
+        for tryb in ("model", "model+bramka_zm", "losowo"):
+            if tryb == "model+bramka_zm":                      # tylko coiny z gornej 1/3 zmiennosci (atr_pct) w godzinie
+                Qb = Q[Q.atr_pct >= Q.groupby("_t").atr_pct.transform(lambda x: x.quantile(2 / 3))]
+                r = Qb.groupby("_t").pred.rank(ascending=False, method="first").reindex(Q.index).fillna(1e9)
+                r2 = Qb.groupby("_t").pred.rank(ascending=True, method="first").reindex(Q.index).fillna(1e9)
+            elif tryb == "model":
                 r = Q.groupby("_t").pred.rank(ascending=False, method="first"); r2 = Q.groupby("_t").pred.rank(ascending=True, method="first")
             else:
                 los = pd.Series(rng.random(len(Q)), index=Q.index)

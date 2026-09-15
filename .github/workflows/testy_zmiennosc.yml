@@ -1,0 +1,59 @@
+name: HAI testy zmiennosci (wybicie OCO z bramka + ranking 3/7 dni)
+# 2026-09-15 konsultacja: cechy przewiduja WIELKOSC ruchu -> (1) wybicie OCO tylko przy prognozie duzej ekspansji,
+# (2) ranking przekrojowy z dluzszym trzymaniem (72/168 h) i bramka zmiennosci. 12 okien WFV w jednym jobie.
+on:
+  workflow_dispatch:
+    inputs:
+      koniec:
+        default: "2026-08-14 00:00:00"
+      symbole:
+        default: "BTC,ETH,BNB,XRP,SOL,TRX,ZEC,HYPE,DOGE,XMR,LINK,ADA,XLM,BCH,LTC,UNI,CC,GRAM,HBAR,AVAX,NEAR,1000SHIB,SUI,TAO,M,BTW,AAVE,ASTER,WLFI,DOT,ONDO,PUMP,ICP,MORPHO,SKY,1000PEPE,ENA,WLD,ETC,LIT,VVV,POL,JST,QNT,KAS,ARB,ALGO,CAKE,ATOM,FIL,JUP,RENDER,DASH,VET,ETHFI,INJ,AERO,CRV,TRUMP,APT,STX,SPX,PENGU,FF,PYTH,VIRTUAL,FET,PENDLE,ZRO,TIA,BSV,NIGHT,AKE,UB,SUN,PIEVERSE,LDO,XTZ,SEI,1000LUNC,MON,KITE,SYRUP,CFX,1000BONK,ENS,1000FLOKI,B,JTO,XPL,OP,GRT,USELESS,COMP,RUNE,AXS,NEO,CHZ,MANA"
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        test: ["wybicie", "ranking72", "ranking168"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt
+      - name: shim /root/ProjektHAI
+        run: |
+          sudo mkdir -p /root && sudo chmod 755 /root
+          sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
+      - name: cechy pochodne
+        run: |
+          python data_warehouse/licz_korelacje_btc.py
+          python data_warehouse/licz_cechy_przekrojowe.py
+          python data_warehouse/licz_cechy_cvd.py
+      - name: test
+        env:
+          HAI_ROOT: ${{ github.workspace }}
+          HAI_INSTANCE_DIR: ${{ github.workspace }}
+          HAI_N_PARALLEL: "4"
+          ENS_NJ: "4"
+          OMP_NUM_THREADS: "4"
+          HAI_SYMBOLS: ${{ inputs.symbole }}
+        run: |
+          mkdir -p wyniki/${{ matrix.test }}
+          case "${{ matrix.test }}" in
+            wybicie)    python -u tools/wybicie_zmiennosc.py --zbior wyniki/zbior.parquet --katalog wyniki/wybicie --koniec "${{ inputs.koniec }}" ;;
+            ranking72)  python -u tools/ranking_wfv.py --zbior wyniki/zbior.parquet --katalog wyniki/ranking72 --koniec "${{ inputs.koniec }}" --horyzont 72 ;;
+            ranking168) python -u tools/ranking_wfv.py --zbior wyniki/zbior.parquet --katalog wyniki/ranking168 --koniec "${{ inputs.koniec }}" --horyzont 168 ;;
+          esac
+          rm -f wyniki/zbior.parquet
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zmiennosc-${{ matrix.test }}
+          path: wyniki/
+          retention-days: 30
