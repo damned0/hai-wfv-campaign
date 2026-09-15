@@ -22,6 +22,8 @@ ap.add_argument("--wiersze", type=int, default=800_000); ap.add_argument("--tylk
 ap.add_argument("--polacz", action="store_true"); ap.add_argument("--co-ile", type=int, default=6)
 ap.add_argument("--k", default="1,2,3,5"); ap.add_argument("--koszt", type=float, default=0.22)
 ap.add_argument("--horyzont", type=int, default=6, help="h trzymania i celu; co-ile domyslnie = horyzont")
+ap.add_argument("--uczen", action="store_true", help="nauczyciel z podgladem przyszlosci -> uczen na cechach uczciwych (+ model zwykly do porownania)")
+ap.add_argument("--kol", default="pred", help="--polacz: ktora kolumne prognozy oceniac (pred / pred_zwykly)")
 a = ap.parse_args()
 if a.co_ile == 6 and a.horyzont != 6: a.co_ile = a.horyzont
 ROOT = os.environ.get("HAI_ROOT", "/root/ProjektHAI")
@@ -48,20 +50,31 @@ def zbuduj():
         c = o.drop_duplicates("timestamp").set_index("timestamp").close
         c = c.reindex(pd.date_range(c.index[0], c.index[-1], freq="h"))
         fw = np.log(c.shift(-H) / c)
-        g = g.assign(fwd=fw.reindex(g._t.values).values); cz.append(g)
+        g = g.assign(fwd=fw.reindex(g._t.values).values)
+        if a.uczen:                                        # PODGLAD PRZYSZLOSCI — wylacznie cechy nauczyciela
+            r1 = np.log(c / c.shift(1))
+            g = g.assign(p_fwd_1h=r1.shift(-1).reindex(g._t.values).values,
+                         p_vol_fut=r1.abs().rolling(H).sum().shift(-H).reindex(g._t.values).values)
+        cz.append(g)
     Z = pd.concat(cz, ignore_index=True)
     Z = Z[Z.fwd.notna()]
+    if a.uczen:
+        b = Z[Z.symbol == "BTC"].set_index("_t").fwd
+        Z["p_btc_fut"] = Z._t.map(b).values
     Z["fwd_res"] = Z.fwd - Z.groupby("_t").fwd.transform("mean")
     Z["y"] = Z.groupby("_t").fwd_res.rank(pct=True)
     Z["n_godz"] = Z.groupby("_t").symbol.transform("size")
     Z = Z[Z.n_godz >= 20]                                  # godziny z malym przekrojem odpadaja
     cechy = [c for c in Z.columns if c not in ("symbol", "timestamp", "_t", "fwd", "fwd_res", "y", "n_godz", "close")
+             and not c.startswith("p_")
              and not c.startswith("label") and c not in MAKRO and pd.api.types.is_numeric_dtype(Z[c]) and Z[c].nunique() > 5]
     R = Z[["symbol", "_t", "fwd", "fwd_res", "y", "atr_pct"]].copy()
     X = Z[cechy].astype(np.float32).replace([np.inf, -np.inf], np.nan)
     Xr = X.groupby(Z._t.values).rank(pct=True).astype(np.float32)    # percentyl w godzinie
     Xr.columns = [f"pr_{c}" for c in cechy]
     Xr["atr_pct_surowe"] = X["atr_pct"].values; Xr["godzina"] = Z._t.dt.hour.values.astype(np.float32)
+    if a.uczen:
+        R = R.join(Z[["p_fwd_1h", "p_vol_fut", "p_btc_fut"]].astype(np.float32))
     return R.reset_index(drop=True), Xr.reset_index(drop=True)
 
 
@@ -77,6 +90,24 @@ def okno(nr, R, X):
     m.fit(X.iloc[tr], R.y.values[tr])
     te = np.where((R._t >= st) & (R._t < kon))[0]
     P = R.iloc[te][["symbol", "_t", "fwd", "fwd_res", "y", "atr_pct"]].copy(); P["pred"] = m.predict(X.iloc[te]); P["okno"] = nr
+    if a.uczen:
+        # NAUCZYCIEL: cechy uczciwe + podglad (p_*), 5 blokow czasowych w TRENINGU; ocena kazdego bloku z modelu, ktory
+        # go nie widzial (bez przeuczenia miekkich etykiet). UCZEN: tylko cechy uczciwe, cel = ocena nauczyciela.
+        # Walidacja: okno WFV, prawdziwy cel — nauczyciel i podglad nie dotykaja okna.
+        Pp = R[["p_fwd_1h", "p_vol_fut", "p_btc_fut"]].values
+        XT = np.hstack([X.iloc[tr].values, Pp[tr]])
+        blok = np.minimum((np.argsort(np.argsort(R._t.values[tr])) * 5) // len(tr), 4)
+        miekkie = np.zeros(len(tr))
+        for b in range(5):
+            n = lgb.LGBMRegressor(n_estimators=400, learning_rate=0.03, num_leaves=31, min_child_samples=2000, subsample=0.7,
+                                  subsample_freq=1, colsample_bytree=0.6, reg_lambda=10.0, verbose=-1, n_jobs=int(os.environ.get("ENS_NJ", "4")))
+            n.fit(XT[blok != b], R.y.values[tr][blok != b]); miekkie[blok == b] = n.predict(XT[blok == b])
+        from scipy.stats import spearmanr
+        print(f"  nauczyciel (poza blokiem): korelacja z celem {spearmanr(miekkie, R.y.values[tr])[0]:+.3f}", flush=True)
+        u = lgb.LGBMRegressor(n_estimators=400, learning_rate=0.03, num_leaves=31, min_child_samples=2000, subsample=0.7,
+                              subsample_freq=1, colsample_bytree=0.6, reg_lambda=10.0, verbose=-1, n_jobs=int(os.environ.get("ENS_NJ", "4")))
+        u.fit(X.iloc[tr], miekkie)
+        P["pred_zwykly"] = P["pred"]; P["pred"] = u.predict(X.iloc[te])
     imp = pd.Series(m.feature_importances_, index=X.columns).sort_values(ascending=False).head(15)
     return P, imp
 
@@ -84,6 +115,7 @@ def okno(nr, R, X):
 def ocen(P):
     ks = [int(k) for k in a.k.split(",")]
     P = P.copy(); P["dzien"] = P._t.dt.normalize()
+    P["pred"] = P[a.kol]
     ic = P.groupby("_t").apply(lambda g: g.pred.corr(g.y, method="spearman"))
     print(f"\nIC (Spearman prognoza vs cel w godzinie): srednio {ic.mean():+.4f}, t-stat {ic.mean() / ic.std() * np.sqrt(len(ic)):+.1f}, "
           f"godzin z IC>0 {(ic > 0).mean():.1%}, per okno: " + " ".join(f"{v:+.3f}" for v in ic.groupby(P.groupby('_t').okno.first()).mean().values))
