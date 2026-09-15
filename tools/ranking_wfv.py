@@ -114,7 +114,7 @@ def okno(nr, R, X):
 
 def ocen(P):
     ks = [int(k) for k in a.k.split(",")]
-    P = P.copy(); P["dzien"] = P._t.dt.normalize()
+    P = P.reset_index(drop=True).copy(); P["dzien"] = P._t.dt.normalize()
     P["pred"] = P[a.kol]
     ic = P.groupby("_t").apply(lambda g: g.pred.corr(g.y, method="spearman"))
     print(f"\nIC (Spearman prognoza vs cel w godzinie): srednio {ic.mean():+.4f}, t-stat {ic.mean() / ic.std() * np.sqrt(len(ic)):+.1f}, "

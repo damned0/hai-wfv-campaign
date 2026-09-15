@@ -5,7 +5,8 @@ Cechy dobrze przewiduja WIELKOSC ruchu, slabo kierunek. Tu model (LGB, WFV 12x45
 przewiduje ekspansje: (max high - min low w nastepnych 12 h) / ATR. Gdy prognoza w gornych --gorne (10%) wzgledem
 prognoz z poprzednich 7 dni (przyczynowo): zlecenia stop OCO — kupno nad max(high 12 h) + 0,1 ATR, sprzedaz pod
 min(low 12 h) - 0,1 ATR, wazne 6 h; pierwsze wypelnione anuluje drugie. Po wejsciu: stop 0,8 ATR, cel 1,8 ATR, max 12 h.
-Ostroznie: wejscie stop +0,05% poslizgu ponad koszt 0,22%; swieca z obiema stronami OCO albo z celem i stopem = strata.
+Ostroznie: wejscie stop +0,05% poslizgu ponad koszt 0,22%; swieca z obiema stronami OCO albo z celem i stopem = strata;
+w swiecy wejscia liczy sie tylko zamkniecie (jej high/low bylo czesciowo przed wejsciem) — poprawka 15.09 22:00.
 Kontrola: ten sam mechanizm BEZ bramki (co --co-ile h na kazdym coinie) — czy bramka cos daje.
 """
 import argparse, os, sys, time, numpy as np, pandas as pd
@@ -98,9 +99,11 @@ def symuluj(sygnaly):
             cel, stop = cena + zn * TP * atr, cena - zn * SL * atr
             wynik = None
             for k in range(j, min(j + MAXH, len(C))):
-                trc = (H[k] >= cel) if zn == 1 else (L[k] <= cel); trs = (L[k] <= stop) if zn == 1 else (H[k] >= stop)
-                if k == j:                                                 # swieca wejscia: cel liczy sie tylko, gdy stop nie
-                    trc = trc and not trs
+                if k == j:                          # swieca wejscia: jej high/low bylo czesciowo PRZED wejsciem (cena przebijala
+                    trc = False                     # poziom) — liczy sie tylko zamkniecie ponizej stopu (ostroznie: strata)
+                    trs = (C[k] <= stop) if zn == 1 else (C[k] >= stop)
+                else:
+                    trc = (H[k] >= cel) if zn == 1 else (L[k] <= cel); trs = (L[k] <= stop) if zn == 1 else (H[k] >= stop)
                 if trs: wynik, wyj = -SL * atr, k; break
                 if trc: wynik, wyj = TP * atr, k; break
             if wynik is None:

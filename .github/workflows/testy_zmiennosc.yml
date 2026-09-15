@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test: ["wybicie", "ranking72", "ranking168"]
+        test: ["wybicie"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,7 +50,9 @@ jobs:
             ranking72)  python -u tools/ranking_wfv.py --zbior wyniki/zbior.parquet --katalog wyniki/ranking72 --koniec "${{ inputs.koniec }}" --horyzont 72 ;;
             ranking168) python -u tools/ranking_wfv.py --zbior wyniki/zbior.parquet --katalog wyniki/ranking168 --koniec "${{ inputs.koniec }}" --horyzont 168 ;;
           esac
-          rm -f wyniki/zbior.parquet
+      - name: bez zbioru w artefakcie
+        if: always()
+        run: rm -f wyniki/zbior.parquet
       - uses: actions/upload-artifact@v4
         if: always()
         with:
