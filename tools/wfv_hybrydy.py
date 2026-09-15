@@ -31,6 +31,8 @@ ap.add_argument("--polacz", action="store_true", help="bez treningu: sklada okno
 ap.add_argument("--zakresy", default="wl48,wszystkie", help="zakresy symboli silnika: wl48,wszystkie,lista100")
 ap.add_argument("--geometrie", default="", help="GH --zbior: np. '1.0,1.5;1.5,1.5' (puste = 2.5/1.5, 4/1, 6/1.5)")
 ap.add_argument("--horyzonty", default="", help="GH --zbior: np. '4,6' (puste = 24,48,72)")
+ap.add_argument("--rezim", default="", choices=["", "wzrost", "spadek", "bok"], help="uczenie TYLKO w tym rezimie rynku (mediana zwrotu altow 7 dni vs tercyle z treningu)")
+ap.add_argument("--zapisz-sygnaly", default="", help="konfiguracje (po przecinku bez spacji) — zapis sygnalow niezaleznie od wyniku")
 a = ap.parse_args()
 NJ = int(os.environ.get("ENS_NJ", "9"))
 TP, SL, HZ, ST = a.etykieta.split(","); TP, SL, HZ = float(TP), float(SL), int(HZ)
@@ -116,6 +118,11 @@ def zadanie(args):
     Z = pd.read_parquet(a.przygotowany, columns=cechy + ["symbol", "_t", KOL])
     Z = Z[Z[KOL].notna() & ~Z.symbol.isin(PZ.MARTWE_COINY)]
     tr = Z[Z._t < start - pd.Timedelta(days=a.embargo)]
+    if a.rezim:        # ekspert rezimu: tylko wiersze treningu z danym rezimem (progi = tercyle z treningu tego okna)
+        m7 = pd.read_parquet(f"{a.katalog}/_rezim_m7.parquet").set_index("_t").m7
+        mt = tr._t.map(m7); ref = m7[m7.index < start - pd.Timedelta(days=a.embargo)].dropna()
+        q1, q2 = ref.quantile(1 / 3), ref.quantile(2 / 3)
+        tr = tr[(mt > q2) if a.rezim == "wzrost" else (mt < q1) if a.rezim == "spadek" else ((mt >= q1) & (mt <= q2))]
     if len(tr) > a.wiersze:
         tr = tr.sample(a.wiersze, random_state=nr)
     y = (tr[KOL] > 0).astype(int)
@@ -174,6 +181,13 @@ def main():
         del Zs, tr0
     print(f"WFV hybryd: {len(cechy)} cech coina, {a.okna}x{a.dni} dni {starty[0].date()} -> {koniec.date()}, "
           f"etykieta {KOL}, {a.tx} tx/dzien/48 sym.", flush=True)
+    if a.rezim and not a.polacz:     # rezim rynku: mediana 7-dniowego zwrotu altow (przeszlosc), zapis dla zadan
+        Cm = pd.DataFrame({s: pd.read_parquet(f"{PZ.ROOT}/data_warehouse/ohlcv/binance/1h/{s}.parquet", columns=["timestamp", "close"])
+                           .assign(timestamp=lambda d: pd.to_datetime(d.timestamp).astype("datetime64[ns]")).drop_duplicates("timestamp")
+                           .set_index("timestamp").close for s in sorted({*pd.read_parquet(a.przygotowany, columns=["symbol"]).symbol.unique()})})
+        m7 = (Cm / Cm.shift(168) - 1).median(axis=1)
+        pd.DataFrame({"_t": m7.index, "m7": m7.values}).to_parquet(f"{a.katalog}/_rezim_m7.parquet", index=False)
+        print(f"rezim: {a.rezim} (uczenie tylko w nim)", flush=True)
     czesci, meta = [], []
     if a.polacz:
         for f in sorted(glob.glob(f"{a.katalog}/**/okno_[0-9][0-9].parquet", recursive=True)):
@@ -232,7 +246,9 @@ def main():
                         okien_plus=int((po_oknach > 0).sum()), okien=int(len(po_oknach)),
                         najgorsze_okno=po_oknach.min(), najlepsze_okno=po_oknach.max()))
         X = S[["symbol", "_t"]].copy(); X["akcja"] = -1 if ST == "S" else 1
-        X["ts_ms"] = X["_t"].astype("datetime64[ms]").astype("int64"); syg[nm] = X
+        X["ts_ms"] = X["_t"].astype("datetime64[ms]").astype("int64"); X["okno"] = S.okno.values; syg[nm] = X
+        if nm in a.zapisz_sygnaly.split(","):
+            X.to_parquet(f"{a.katalog}/sygnaly_{nm.replace('|', '_').replace('+', 'p').replace('*', '')}.parquet", index=False)
     R = pd.DataFrame(wyn).sort_values("ev", ascending=False)
     R.to_csv(f"{a.katalog}/hybrydy.csv", index=False)
     pd.set_option("display.width", 220)
