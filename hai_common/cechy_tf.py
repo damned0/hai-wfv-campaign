@@ -104,6 +104,11 @@ def tf_w_toku(c1h: np.ndarray, t1h: np.ndarray,
     dl = b + 1                        # dlugosc szeregu, jaki widzi silnik
 
     # --- RSI: srednia prosta z 14 zmian = 13 zamknietych + 1 w toku ---
+    # FIX 2026-09-15: coin z historia krotsza niz RSI_OKRES+1 swiec tf (np. PONS: 10 swiec 1d) — indeks
+    # awaryjny bi=RSI_OKRES wychodzil poza cg i caly trening symbolu padal IndexError. Tu i tak ok_rsi
+    # jest wszedzie False (b <= len-1 < RSI_OKRES), wiec rsi = 50.0 bez liczenia.
+    if len(ctf) < RSI_OKRES + 1:
+        return rsi, _trend_tf(c1h, ctf, b, dl, min_swiec)
     d = np.diff(ctf)                  # d[j] = ctf[j+1] - ctf[j]
     g = np.where(d > 0, d, 0.0)
     l = np.where(d < 0, -d, 0.0)
@@ -122,6 +127,11 @@ def tf_w_toku(c1h: np.ndarray, t1h: np.ndarray,
         r = np.where(al < 1e-10, 100.0, 100.0 - 100.0 / (1.0 + ag / al))
     rsi = np.where(ok_rsi, r, 50.0)
 
+    return rsi, _trend_tf(c1h, ctf, b, dl, min_swiec)
+
+
+def _trend_tf(c1h, ctf, b, dl, min_swiec):
+    """trend EMA(9)/EMA(21) +-0.3% na [zamkniete tf..., w toku = c1h] (wydzielone z tf_w_toku 2026-09-15)."""
     # --- trend: EMA(9) vs EMA(21) na [zamkniete..., w toku] ---
     ef_full = _ema_rek(ctf, 9)
     es_full = _ema_rek(ctf, 21)
@@ -133,8 +143,7 @@ def tf_w_toku(c1h: np.ndarray, t1h: np.ndarray,
     with np.errstate(divide="ignore", invalid="ignore"):
         dp = np.where(es != 0, (ef - es) / es * 100.0, 0.0)
     tr = np.where(dp > 0.3, 1.0, np.where(dp < -0.3, -1.0, 0.0))
-    trend = np.where(ok_tr, tr, 0.0)
-    return rsi, trend
+    return np.where(ok_tr, tr, 0.0)
 
 
 def trend_seria(c: np.ndarray) -> np.ndarray:

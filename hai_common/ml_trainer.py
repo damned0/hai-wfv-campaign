@@ -880,8 +880,7 @@ def _load_btc_context() -> Optional[Dict]:
         out = {}
         _szeregi = {}
         for tf in ['1h', '4h', '1d']:
-            p = WH_BASE / tf / 'BTC.parquet'
-            df = pd.read_parquet(p)
+            df = _czytaj_swiece('BTC', tf)
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df = df.sort_values('timestamp').reset_index(drop=True)
             closes = df['close'].values.astype(np.float64)
@@ -916,6 +915,29 @@ def _load_btc_context() -> Optional[Dict]:
         return _BTC_CONTEXT_CACHE
 
 
+def _czytaj_swiece(symbol: str, tf: str) -> pd.DataFrame:
+    """Swiece symbolu z magazynu. JEDYNE miejsce czytania swiec w treningu (2026-09-15, parytet).
+    Zadanie cech godzinowych (cechy_godzinowe.py) podmienia te funkcje na magazyn + archiwum
+    pobieracza (zamkniete swiece z ostatniej godziny) — reszta liczenia cech zostaje ta sama."""
+    return pd.read_parquet(WH_BASE / tf / f'{symbol}.parquet')
+
+
+def _funding_uczciwy(f_df: pd.DataFrame) -> pd.DataFrame:
+    """Naprawa przecieku fundingu (2026-09-14, tools/test_fundingu.py, pamiec: przeciek fundingu Coinalyze).
+    Wiersze DOBOWE (Coinalyze) maja znacznik 00:00 i wartosc z KONCA doby, w procentach. Widoczne dopiero
+    od D+1 00:00 i przeliczone na ulamek (jak Binance fapi 8 h). Identycznie jak tools/napraw_funding.py,
+    na ktorym uczono hybrydy z 15.09. HAI_FUNDING_STARY=1 -> stare zachowanie (odtwarzanie starych zbiorow)."""
+    if os.environ.get("HAI_FUNDING_STARY") == "1" or f_df is None or len(f_df) < 2:
+        return f_df
+    d = f_df.copy()
+    d['timestamp'] = pd.to_datetime(d['timestamp']).astype('datetime64[ns]')
+    d = d.sort_values('timestamp').drop_duplicates('timestamp').reset_index(drop=True)
+    dob = (d['timestamp'].diff().dt.total_seconds().div(3600).bfill() >= 20).values
+    d.loc[dob, 'timestamp'] = d.loc[dob, 'timestamp'] + pd.Timedelta(days=1)
+    d.loc[dob, 'funding_rate'] = d.loc[dob, 'funding_rate'] / 100.0
+    return d.sort_values('timestamp').drop_duplicates('timestamp', keep='last').reset_index(drop=True)
+
+
 def load_symbol_data(symbol: str) -> Optional[Dict]:
     """Zwraca dict z 1h/4h/1d DataFrames + funding dla symbolu."""
     try:
@@ -925,7 +947,7 @@ def load_symbol_data(symbol: str) -> Optional[Dict]:
             if not p.exists():
                 logger.warning(f'{symbol} {tf}: brak pliku')
                 return None
-            df = pd.read_parquet(p)
+            df = _czytaj_swiece(symbol, tf)
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df = df.sort_values('timestamp').reset_index(drop=True)
             out[tf] = df
@@ -939,7 +961,7 @@ def load_symbol_data(symbol: str) -> Optional[Dict]:
             if 'funding_rate' not in f_df.columns and 'close' in f_df.columns:
                 f_df['funding_rate'] = f_df['close']
             f_df = f_df.sort_values('timestamp').reset_index(drop=True)
-            out['funding'] = f_df
+            out['funding'] = _funding_uczciwy(f_df)
         else:
             out['funding'] = None
 
@@ -1051,7 +1073,8 @@ def load_symbol_data(symbol: str) -> Optional[Dict]:
         return None
 
 
-def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = None) -> pd.DataFrame:
+def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = None,
+                              tylko_ostatnie: int = 0) -> pd.DataFrame:
     """Buduje DataFrame z features + labels dla 1 symbolu.
 
     v2.0: pre-compute RSI/trend dla 4h+1d RAZ, funding searchsorted O(log n).
@@ -1062,7 +1085,9 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
     df_fund = data.get('funding')
     df_taker = data.get('taker')
 
-    if len(df_1h) < MIN_HISTORY + LOOKAHEAD_BARS:
+    # tylko_ostatnie > 0 (2026-09-15, parytet live): cechy TYLKO dla ostatnich N zamknietych swiec,
+    # ten sam kod co trening. Etykiety w tych wierszach sa bez znaczenia (brak przyszlosci) — wyrzucane.
+    if len(df_1h) < MIN_HISTORY + (1 if tylko_ostatnie else LOOKAHEAD_BARS):
         return pd.DataFrame()
 
     # === DANE 1H ===
@@ -1225,7 +1250,9 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
 
     records = []
 
-    for i in range(MIN_HISTORY, n - LOOKAHEAD_BARS):
+    _zakres = (range(max(MIN_HISTORY, n - tylko_ostatnie), n) if tylko_ostatnie
+               else range(MIN_HISTORY, n - LOOKAHEAD_BARS))
+    for i in _zakres:
         ts = times[i]
         cur = closes[i]
 
@@ -1633,14 +1660,16 @@ def build_features_for_symbol(data: Dict, symbol: str, extra_horizons: list = No
     return pd.DataFrame(records)
 
 
-def _build_one_symbol(sym: str, extra_horizons: list = None) -> Optional[pd.DataFrame]:
+def _build_one_symbol(sym: str, extra_horizons: list = None, tylko_ostatnie: int = 0) -> Optional[pd.DataFrame]:
     """Worker dla joblib.Parallel - laduje + buduje features dla 1 symbolu."""
     t0 = time.time()
     data = load_symbol_data(sym)
     if data is None:
         logger.warning(f'{sym}: brak danych')
         return None
-    df = build_features_for_symbol(data, sym, extra_horizons=extra_horizons)
+    df = build_features_for_symbol(data, sym, extra_horizons=extra_horizons, tylko_ostatnie=tylko_ostatnie)
+    if tylko_ostatnie and not df.empty:
+        df = df[[c for c in df.columns if not c.startswith('label')]]
     if df.empty:
         logger.warning(f'{sym}: pusty DataFrame')
         return None

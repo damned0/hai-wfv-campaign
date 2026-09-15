@@ -1,0 +1,61 @@
+name: HAI ranking przekrojowy (lista 100, okno x horyzont na maszyne)
+# 2026-09-15: cel = percentyl zwrotu coina wzgledem reszty rynku w godzinie; cechy = percentyle w godzinie.
+# ml_trainer z naprawa fundingu (D+1, /100). Skladanie na VPS: tools/ranking_wfv.py --polacz --katalog <artefakty>/rank_H<H>
+on:
+  workflow_dispatch:
+    inputs:
+      koniec:
+        description: "koniec ostatniego okna (dane w repo do 2026-08-20)"
+        default: "2026-08-14 00:00:00"
+      symbole:
+        description: "whitelista HAI_SYMBOLS (lista 100 bez PONS)"
+        default: "BTC,ETH,BNB,XRP,SOL,TRX,ZEC,HYPE,DOGE,XMR,LINK,ADA,XLM,BCH,LTC,UNI,CC,GRAM,HBAR,AVAX,NEAR,1000SHIB,SUI,TAO,M,BTW,AAVE,ASTER,WLFI,DOT,ONDO,PUMP,ICP,MORPHO,SKY,1000PEPE,ENA,WLD,ETC,LIT,VVV,POL,JST,QNT,KAS,ARB,ALGO,CAKE,ATOM,FIL,JUP,RENDER,DASH,VET,ETHFI,INJ,AERO,CRV,TRUMP,APT,STX,SPX,PENGU,FF,PYTH,VIRTUAL,FET,PENDLE,ZRO,TIA,BSV,NIGHT,AKE,UB,SUN,PIEVERSE,LDO,XTZ,SEI,1000LUNC,MON,KITE,SYRUP,CFX,1000BONK,ENS,1000FLOKI,B,JTO,XPL,OP,GRT,USELESS,COMP,RUNE,AXS,NEO,CHZ,MANA"
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        horyzont: [6, 24]
+        okno: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt
+      - name: shim /root/ProjektHAI
+        run: |
+          sudo mkdir -p /root && sudo chmod 755 /root
+          sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
+      - name: cechy pochodne
+        run: |
+          python data_warehouse/licz_korelacje_btc.py
+          python data_warehouse/licz_cechy_przekrojowe.py
+          python data_warehouse/licz_cechy_cvd.py
+      - name: ranking - jedno okno
+        env:
+          HAI_ROOT: ${{ github.workspace }}
+          HAI_INSTANCE_DIR: ${{ github.workspace }}
+          HAI_N_PARALLEL: "4"
+          ENS_NJ: "4"
+          OMP_NUM_THREADS: "4"
+          HAI_SYMBOLS: ${{ inputs.symbole }}
+        run: |
+          mkdir -p wyniki/rank_H${{ matrix.horyzont }}
+          python -u tools/ranking_wfv.py --zbior wyniki/zbior.parquet --katalog wyniki/rank_H${{ matrix.horyzont }} \
+            --koniec "${{ inputs.koniec }}" --tylko-okno ${{ matrix.okno }} --horyzont ${{ matrix.horyzont }}
+          rm -f wyniki/zbior.parquet
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ranking-H${{ matrix.horyzont }}-${{ matrix.okno }}
+          path: wyniki/
+          retention-days: 30
