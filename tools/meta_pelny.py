@@ -62,7 +62,7 @@ wk = re.compile(r"^r_\d+\.\d+_\d+\.\d+_\d+_[LS]$")
 kol = pq.read_schema(A.przygotowany).names
 CECHY = [k for k in kol if not wk.match(k) and not k.startswith(("_", "label_", "trade_", "cel_", "__"))
          and k not in ("timestamp", "symbol", "close") and k not in PZ.MAKRO_USUNIETE and k not in WH.RYNKOWE]
-Z = pd.read_parquet(A.przygotowany, columns=CECHY + ["symbol", "_t", "close", KOL])
+Z = pd.read_parquet(A.przygotowany, columns=CECHY + ["symbol", "_t", KOL])
 Z = Z[~Z.symbol.isin(PZ.MARTWE_COINY)].sort_values("_t").reset_index(drop=True)
 kor = Z[CECHY].sample(min(80_000, len(Z)), random_state=0).corr(method="spearman").abs().fillna(0)
 
@@ -81,7 +81,7 @@ def trenuj_i_prognozuj(do_treningu, od_prog, do_prog, tag):
         return None
     y = (tr[KOL] > 0).astype(int)
     maska = (Z._t >= od_prog) & (Z._t < do_prog)
-    P = Z.loc[maska, ["symbol", "_t", "close"]].copy()
+    P = Z.loc[maska, ["symbol", "_t"]].copy()
     s0 = tr.sample(min(250_000, len(tr)), random_state=2)
     for t in TYPY:
         m0 = WH.zbuduj(t); m0.fit(WH.Xp(s0, CECHY, t), (s0[KOL] > 0).astype(int))
@@ -113,7 +113,22 @@ def sygnaly(P):
     return S
 
 
-CENY = {s: g.set_index("_t").close.sort_index() for s, g in Z[["symbol", "_t", "close"]].groupby("symbol")}
+def _ceny():
+    """zamkniecia 1h z magazynu — przygotowany zbior NIE ma kolumny close (blad 1. przebiegu, 16.09)"""
+    import glob as _g
+    out = {}
+    for p in _g.glob(os.path.join(os.environ.get("HAI_ROOT", "/root/ProjektHAI"),
+                                  "data_warehouse/ohlcv/binance/1h/*.parquet")):
+        s = os.path.basename(p)[:-8]
+        o = pd.read_parquet(p, columns=["timestamp", "close"])
+        o["timestamp"] = pd.to_datetime(o.timestamp).dt.tz_localize(None).astype("datetime64[ns]")
+        o = o.drop_duplicates("timestamp").sort_values("timestamp")
+        out[s] = o.set_index("timestamp").close
+    return out
+
+
+CENY = _ceny()
+print(f"ceny z magazynu: {len(CENY)} symboli", flush=True)
 
 
 def wynik(S):

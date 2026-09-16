@@ -57,10 +57,15 @@ jobs:
           HAI_SYMBOLS: ${{ inputs.symbole }}
         run: |
           mkdir -p wyniki
-          # zbior budowany raz na maszyne (ta sama sciezka co hybrydy_krotkie.yml)
-          python -u tools/wfv_hybrydy.py --zbior wyniki/zbior.parquet --przygotowany wyniki/przyg.parquet \
-            --geometrie "1.5,1.5" --horyzonty "6" --katalog wyniki/_przyg \
-            --etykieta "${{ inputs.etykieta }}" --koniec "${{ inputs.koniec }}" --tylko-okno 1 --procesy 1 || true
+          # zbior budowany WPROST przez poszukiwania.przygotuj — wczesniej szlo przez wfv_hybrydy.py
+          # --tylko-okno 1, ktore przy okazji trenowalo 6 niepotrzebnych modeli na kazdej z 12 maszyn.
+          python -u -c "
+          import sys; sys.path.insert(0,'tools')
+          import poszukiwania as PZ
+          PZ.GEOMETRIE=[(1.5,1.5)]; PZ.HORYZONTY=[6]
+          PZ.przygotuj('wyniki/zbior.parquet',[]).to_parquet('wyniki/przyg.parquet',index=False)
+          print('zbior gotowy')
+          "
           python -u tools/meta_pelny.py --przygotowany wyniki/przyg.parquet --katalog wyniki \
             --etykieta "${{ inputs.etykieta }}" --okno ${{ matrix.okno }} \
             --trzymanie ${{ inputs.trzymanie }} --koniec "${{ inputs.koniec }}"
