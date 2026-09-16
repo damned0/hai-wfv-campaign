@@ -1,0 +1,74 @@
+name: HAI geometria wyjscia + uczciwy retrening (3 geometrie x 2 strony x 12 okien)
+# 2026-09-16, dwa pytania w jednej kampanii:
+# 1. RETRENING UCZCIWY — modele produkcyjne (lgb_sniper_6h, cat_trend_6h, xgb_rev_6h) uczono PRZED fixem
+#    z 13.09, gdy rsi_4h/rsi_1d/trend_4h/trend_1d widzialy przyszlosc (rsi_4h korelowal z przyszlym ruchem
+#    +0,693, po naprawie +0,113). Te cechy to 30-53% waznosci tych modeli. Repo ma juz naprawiony cechy_tf.py,
+#    wiec kazdy trening tutaj jest uczciwy — pytanie brzmi, co te typy modeli potrafia BEZ przecieku.
+# 2. GEOMETRIA WYJSCIA — na sygnalach rangi 1 stop 1,5 ATR wypadl najgorzej z 10 wariantow (tools/long_wyjscia.py,
+#    kosztowal ~0,25%/tx wzgledem wyjscia na czas). To bylo na INNEJ strategii, wiec przed zmiana produkcji
+#    (HAI_ATR_TP=2.5 / HAI_ATR_SL=1.5) trzeba to zmierzyc na tych modelach i z symulacja silnika.
+# Geometrie ustalone Z GORY, wszystkie raportowane — bez dobierania po wyniku.
+on:
+  workflow_dispatch:
+    inputs:
+      koniec:
+        description: "koniec ostatniego okna (dane w repo do 2026-08-20)"
+        default: "2026-08-14 00:00:00"
+      symbole:
+        description: "whitelista HAI_SYMBOLS"
+        default: "BTC,ETH,BNB,XRP,SOL,TRX,ZEC,HYPE,DOGE,XMR,LINK,ADA,XLM,BCH,LTC,UNI,CC,GRAM,HBAR,AVAX,NEAR,1000SHIB,SUI,TAO,M,BTW,AAVE,ASTER,WLFI,DOT,ONDO,PUMP,ICP,MORPHO,SKY,1000PEPE,ENA,WLD,ETC,LIT,VVV,POL,JST,QNT,KAS,ARB,ALGO,CAKE,ATOM,FIL,JUP,RENDER,DASH,VET,ETHFI,INJ,AERO,CRV,TRUMP,APT,STX,SPX,PENGU,FF,PYTH,VIRTUAL,FET,PENDLE,ZRO,TIA,BSV,NIGHT,AKE,UB,SUN,PIEVERSE,LDO,XTZ,SEI,1000LUNC,MON,KITE,SYRUP,CFX,1000BONK,ENS,1000FLOKI,B,JTO,XPL,OP,GRT,USELESS,COMP,RUNE,AXS,NEO,CHZ,MANA"
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        geo: ["2.5,1.5", "2.5,3.0", "1.5,1.5"]   # produkcja / szeroki stop / symetryczna
+        strona: ["S", "L"]
+        okno: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt
+      - name: shim /root/ProjektHAI
+        run: |
+          sudo mkdir -p /root && sudo chmod 755 /root
+          sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
+      - name: cechy pochodne (jak kampania WFV)
+        run: |
+          python data_warehouse/licz_korelacje_btc.py
+          python data_warehouse/licz_cechy_przekrojowe.py
+          python data_warehouse/licz_cechy_cvd.py
+      - name: okno x geometria x strona
+        env:
+          HAI_ROOT: ${{ github.workspace }}
+          HAI_INSTANCE_DIR: ${{ github.workspace }}
+          HAI_N_PARALLEL: "4"
+          ENS_NJ: "4"
+          OMP_NUM_THREADS: "4"
+          HAI_SYMBOLS: ${{ inputs.symbole }}
+        run: |
+          mkdir -p wyniki
+          N=$(echo "${{ matrix.geo }},6,${{ matrix.strona }}" | tr ',' '_')
+          python -u tools/wfv_hybrydy.py --zbior wyniki/zbior.parquet --przygotowany wyniki/przyg.parquet \
+            --geometrie "${{ matrix.geo }}" --horyzonty "6" \
+            --katalog wyniki/hyb_$N --etykieta "${{ matrix.geo }},6,${{ matrix.strona }}" \
+            --koniec "${{ inputs.koniec }}" --tylko-okno ${{ matrix.okno }} --procesy 1
+      - name: skasuj zbior przed uploadem
+        if: always()
+        run: rm -f wyniki/zbior.parquet wyniki/przyg.parquet
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: geo-${{ matrix.strona }}-${{ matrix.okno }}-${{ strategy.job-index }}
+          path: wyniki/
+          retention-days: 30
