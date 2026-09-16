@@ -1,0 +1,75 @@
+name: HAI meta-etykieta z pelnym retreningiem bazy (12 okien)
+# 2026-09-16: meta-filtr mierzony juz dwa razy (4/8 i 1/6 okien ponad losowe), ale za kazdym razem meta uczyla sie
+# na prognozach bazy, ktora te dane widziala w treningu. Tu kazde okno trenuje baze DWA razy: BAZA-A (wczesniejsza)
+# generuje material dla meta poza wlasna proba, BAZA-B liczy okno testowe. Kontrola losowym filtrem o tej samej
+# liczbie przepuszczonych transakcji (percentyl 95) — bez niej kazdy filtr wyglada dobrze przy ciezkim ogonie.
+on:
+  workflow_dispatch:
+    inputs:
+      koniec:
+        description: "koniec ostatniego okna (dane w repo do 2026-08-20)"
+        default: "2026-08-14 00:00:00"
+      etykieta:
+        description: "geometria,horyzont,strona"
+        default: "1.5,1.5,6,L"
+      trzymanie:
+        description: "godzin trzymania pozycji (wyjscie na czas, bez stopa)"
+        default: "24"
+      symbole:
+        description: "whitelista HAI_SYMBOLS"
+        default: "BTC,ETH,BNB,XRP,SOL,TRX,ZEC,HYPE,DOGE,XMR,LINK,ADA,XLM,BCH,LTC,UNI,CC,GRAM,HBAR,AVAX,NEAR,1000SHIB,SUI,TAO,M,BTW,AAVE,ASTER,WLFI,DOT,ONDO,PUMP,ICP,MORPHO,SKY,1000PEPE,ENA,WLD,ETC,LIT,VVV,POL,JST,QNT,KAS,ARB,ALGO,CAKE,ATOM,FIL,JUP,RENDER,DASH,VET,ETHFI,INJ,AERO,CRV,TRUMP,APT,STX,SPX,PENGU,FF,PYTH,VIRTUAL,FET,PENDLE,ZRO,TIA,BSV,NIGHT,AKE,UB,SUN,PIEVERSE,LDO,XTZ,SEI,1000LUNC,MON,KITE,SYRUP,CFX,1000BONK,ENS,1000FLOKI,B,JTO,XPL,OP,GRT,USELESS,COMP,RUNE,AXS,NEO,CHZ,MANA"
+jobs:
+  okna:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        okno: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt
+      - name: shim /root/ProjektHAI
+        run: |
+          sudo mkdir -p /root && sudo chmod 755 /root
+          sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
+      - name: cechy pochodne (jak kampania WFV)
+        run: |
+          python data_warehouse/licz_korelacje_btc.py
+          python data_warehouse/licz_cechy_przekrojowe.py
+          python data_warehouse/licz_cechy_cvd.py
+      - name: zbior + meta dla okna
+        env:
+          HAI_ROOT: ${{ github.workspace }}
+          HAI_INSTANCE_DIR: ${{ github.workspace }}
+          HAI_N_PARALLEL: "4"
+          ENS_NJ: "4"
+          OMP_NUM_THREADS: "4"
+          HAI_SYMBOLS: ${{ inputs.symbole }}
+        run: |
+          mkdir -p wyniki
+          # zbior budowany raz na maszyne (ta sama sciezka co hybrydy_krotkie.yml)
+          python -u tools/wfv_hybrydy.py --zbior wyniki/zbior.parquet --przygotowany wyniki/przyg.parquet \
+            --geometrie "1.5,1.5" --horyzonty "6" --katalog wyniki/_przyg \
+            --etykieta "${{ inputs.etykieta }}" --koniec "${{ inputs.koniec }}" --tylko-okno 1 --procesy 1 || true
+          python -u tools/meta_pelny.py --przygotowany wyniki/przyg.parquet --katalog wyniki \
+            --etykieta "${{ inputs.etykieta }}" --okno ${{ matrix.okno }} \
+            --trzymanie ${{ inputs.trzymanie }} --koniec "${{ inputs.koniec }}"
+      - name: skasuj zbior przed uploadem
+        if: always()
+        run: rm -f wyniki/zbior.parquet wyniki/przyg.parquet && rm -rf wyniki/_przyg
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: meta-okno-${{ matrix.okno }}
+          path: wyniki/
+          retention-days: 30
