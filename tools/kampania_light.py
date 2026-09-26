@@ -90,7 +90,8 @@ def zbuduj(zestaw, symbole=None):
             X[k] = X[k].astype("float32")
     # cechy przekrojowe — ranga wewnatrz chwili, zawsze dostepne w t
     X["rank_ret24"] = X.groupby("timestamp")[[k for k in X.columns if k.startswith("ret_")][0]].rank(pct=True)
-    return X, C
+    CECHY = [k for k in X.columns if k not in ("timestamp", "symbol")]
+    return X, C, CECHY
 
 
 def zmiennosc_realna(C, hz):
@@ -205,9 +206,16 @@ def main():
     from lightgbm import LGBMClassifier, LGBMRanker
     rng = np.random.default_rng(0)
     print(f"zestaw={a.zestaw} cel={a.cel} horyzont={a.horyzont}h embargo={embargo}h", flush=True)
-    X, C = zbuduj(a.zestaw)
+    X, C, CECHY = zbuduj(a.zestaw)
     X = etykieta(X, C, a.cel, a.horyzont)
-    CECHY = [k for k in X.columns if k not in ("timestamp", "symbol", "y", "fwd", "fwd_prz")]
+    ZAKAZANE = {"y", "fwd", "fwd_prz", "zmien", "skor", "timestamp", "symbol"}
+    zle = [k for k in CECHY if k in ZAKAZANE]
+    if zle:
+        raise RuntimeError(f"cecha z listy zakazanych w zestawie wejsciowym: {zle}")
+    brak = [k for k in CECHY if k not in X.columns]
+    if brak:
+        raise RuntimeError(f"brak cech po etykietowaniu: {brak}")
+    print(f"  cechy ({len(CECHY)}): {', '.join(CECHY)}", flush=True)
     X = X.dropna(subset=CECHY).sort_values("timestamp").reset_index(drop=True)
     print(f"  wierszy {len(X):,} | cech {len(CECHY)} | {X.timestamp.min():%Y-%m} .. {X.timestamp.max():%Y-%m}", flush=True)
 

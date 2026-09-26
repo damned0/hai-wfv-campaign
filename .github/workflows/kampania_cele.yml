@@ -28,6 +28,12 @@ on:
       dni_okna:
         description: "dlugosc okna testowego w dniach"
         default: "45"
+      cele:
+        description: "ktore cele (JSON), np. [\"zmiennosc\"] do powtorki jednego"
+        default: '["bariera","przekrojowy","koszt","ogon","zmiennosc","ranking"]'
+      horyzonty:
+        description: "ktore horyzonty (JSON)"
+        default: "[24,72,168,336]"
 jobs:
   cele:
     runs-on: ubuntu-latest
@@ -36,8 +42,8 @@ jobs:
       fail-fast: false
       max-parallel: 10
       matrix:
-        horyzont: [24, 72, 168, 336]
-        cel: [bariera, przekrojowy, koszt, ogon, zmiennosc, ranking]
+        horyzont: ${{ fromJSON(inputs.horyzonty) }}
+        cel: ${{ fromJSON(inputs.cele) }}
         zestaw: [rdzen, rdzen_htf]
     steps:
       - uses: actions/checkout@v4
