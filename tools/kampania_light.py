@@ -197,8 +197,14 @@ def main():
         "okien_dodatnich": int((netto > 0).sum()),
         "okien_bijacych_losowy": int(sum(o["bije_losowy"] for o in okna)),
         "tx_na_dzien_srednio": float(np.mean([o["transakcji_na_dzien"] for o in okna])),
+        "boot5_srednio": float(np.mean([o["boot5"] for o in okna])),
+        "okien_boot5_dodatnich": int(sum(o["boot5"] > 0 for o in okna)),
+        # GO wymaga TAKZE dodatniego dolnego przedzialu bootstrapu tygodniowego.
+        # Bez tego warunku 9/12 wariantow pierwszego przebiegu pokazywalo GO=True przy
+        # boot5 ujemnym we WSZYSTKICH — czyli wynik nieodroznialny od zera. Poprawione 26.09.
         "GO": bool(netto.mean() > 0 and (netto > 0).sum() >= len(okna) * 0.6
-                   and sum(o["bije_losowy"] for o in okna) >= len(okna) * 0.6),
+                   and sum(o["bije_losowy"] for o in okna) >= len(okna) * 0.6
+                   and np.mean([o["boot5"] for o in okna]) > 0),
         "okna": okna,
     }
     os.makedirs(a.wyjscie, exist_ok=True)
