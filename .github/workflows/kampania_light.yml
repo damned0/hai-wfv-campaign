@@ -1,0 +1,61 @@
+name: HAI kampania light — horyzont x cel x cechy
+# 2026-09-26. Trzy pytania naraz, kazde osobno rozstrzygalne:
+#   HORYZONT — koszt 0,22% placi sie RAZ, wiec przy 168 h potrzeba 0,031%/dobe zamiast 0,22%/dobe
+#   CEL      — triple_barrier (jak dotad, jedna moneta w izolacji) vs PRZEKROJOWY (czy pobijesz rynek)
+#   CECHY    — rdzen czysty / rdzen+HTF / HTF+ZMIANA zmiennosci (nie poziom — poziom skazony przetrwaniem)
+# Cechy liczone od zera ze swiec, oknami konczacymi sie w t. NIE uzywamy wfv_dataset.parquet,
+# bo zbudowano go 23.08, przed naprawa przecieku 4h/1d z 13.09.
+# GO: sredni zwrot netto koszyka po koszcie od obrotu Z DZWIGNIA + bicie filtra losowego. Zadnego IC/AUC.
+on:
+  workflow_dispatch:
+    inputs:
+      okien:
+        description: "ile okien walk-forward (przesiew = 6)"
+        default: "6"
+      dni_okna:
+        description: "dlugosc okna testowego w dniach (przesiew = 30)"
+        default: "30"
+jobs:
+  przesiew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        horyzont: [24, 48, 72, 168, 336]
+        cel: [bariera, przekrojowy]
+        zestaw: [rdzen, rdzen_htf, htf_zmiana]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt
+      - name: shim /root/ProjektHAI
+        run: |
+          sudo mkdir -p /root && sudo chmod 755 /root
+          sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
+      - name: przesiew
+        env:
+          HAI_ROOT: ${{ github.workspace }}
+          OMP_NUM_THREADS: "4"
+        run: |
+          python -u tools/kampania_light.py \
+            --horyzont ${{ matrix.horyzont }} \
+            --cel ${{ matrix.cel }} \
+            --zestaw ${{ matrix.zestaw }} \
+            --okien ${{ inputs.okien }} \
+            --dni-okna ${{ inputs.dni_okna }} \
+            --wyjscie wyniki
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: light-${{ matrix.zestaw }}-${{ matrix.cel }}-h${{ matrix.horyzont }}
+          path: wyniki/
+          retention-days: 30
