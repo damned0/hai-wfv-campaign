@@ -93,6 +93,12 @@ def zbuduj(zestaw, symbole=None):
     return X, C
 
 
+def zmiennosc_realna(C, hz):
+    """zmiennosc realizowana w oknie hz konczacym sie w t — wylacznie z przeszlosci"""
+    r = C.pct_change()
+    return (r.rolling(hz).std() * 100).stack().rename("zmien").reset_index()
+
+
 def etykieta(X, C, cel, hz):
     R = (C.shift(-hz) / C - 1) * 100
     RS = R.sub(R.mean(axis=1), axis=0)                 # zwrot minus srednia rynku
@@ -102,48 +108,92 @@ def etykieta(X, C, cel, hz):
     dp.columns = ["timestamp", "symbol", "fwd_prz"]
     X = X.merge(dl, on=["timestamp", "symbol"], how="inner").merge(dp, on=["timestamp", "symbol"], how="inner")
     if cel == "bariera":
-        # TP przed SL w ATR — jak dotad, ale na zadanym horyzoncie
-        X["y"] = (X.fwd > KOSZT).astype(int)
-    else:
-        # PRZEKROJOWY: czy moneta trafi w gorny kwintyl rynku w tym horyzoncie
+        # jak dotad: bezwzgledny zwrot ponad prog, jedna moneta w izolacji
+        X["y"] = (X.fwd > 0).astype(int)
+    elif cel == "przekrojowy":
+        # czy moneta trafi w gorny kwintyl rynku
         prog = X.groupby("timestamp").fwd_prz.transform(lambda z: z.quantile(0.8))
         X["y"] = (X.fwd_prz >= prog).astype(int)
+    elif cel == "koszt":
+        # KOSZT W ETYKIECIE: model uczy sie tego, co jest HANDLOWALNE, nie tego co dodatnie.
+        # Dotad koszt odejmowalismy po fakcie, przy ocenie — model go nie widzial.
+        X["y"] = (X.fwd > KOSZT).astype(int)
+    elif cel == "ogon":
+        # CEL OGONOWY: gorne 5%, nie 20%. Zmierzone 25.09: caly pieniadz siedzi w ogonie
+        # (wklad gornego 1% to +0,12..+0,35 pp), a nasz wybor go systematycznie odrzuca.
+        prog = X.groupby("timestamp").fwd_prz.transform(lambda z: z.quantile(0.95))
+        X["y"] = (X.fwd_prz >= prog).astype(int)
+    elif cel == "zmiennosc":
+        # ZWROT SKORYGOWANY O ZMIENNOSC: usuwa skazenie, przez ktore cel barierowy pyta
+        # o zmiennosc monety, a nie o jej kierunek (TP/SL sa w wielokrotnosciach ATR).
+        Zm = zmiennosc_realna(C, hz)
+        Zm.columns = ["timestamp", "symbol", "zmien"]
+        X = X.merge(Zm, on=["timestamp", "symbol"], how="left")
+        X["skor"] = X.fwd_prz / X.zmien.replace(0, np.nan)
+        prog = X.groupby("timestamp").skor.transform(lambda z: z.quantile(0.8))
+        X["y"] = (X.skor >= prog).astype(int)
+        X = X.dropna(subset=["skor"])
+    elif cel == "ranking":
+        # CEL RANKINGOWY: stopniowana istotnosc 0-4 po kwintylach zwrotu przekrojowego.
+        # Uczony przez lambdarank z grupowaniem po chwili — model optymalizuje KOLEJNOSC
+        # wewnatrz chwili, a nie klasyfikuje kazdy wiersz osobno. To wlasciwe sformulowanie
+        # pytania "ktora moneta teraz", ktorego nigdy nie uzylismy.
+        X["y"] = X.groupby("timestamp").fwd_prz.transform(
+            lambda z: pd.qcut(z.rank(method="first"), 5, labels=False, duplicates="drop")).fillna(0).astype(int)
+    else:
+        raise ValueError(cel)
     return X.dropna(subset=["y", "fwd", "fwd_prz"])
 
 
 def ocena(Q, rng):
-    """Sredni zwrot netto koszyka gornego decyla + bootstrap tygodniowy + kontrola losowa."""
+    """Sredni zwrot netto koszyka gornego decyla + bootstrap tygodniowy + kontrola losowa.
+
+    Kontrola losowa zwektoryzowana (bincount na kodach tygodni) — pierwotna wersja robila
+    200x sample+groupby i sama zjadala ~40 s na okno, czyli wiecej niz trening.
+    """
     if len(Q) < 200:
         return None
-    Q = Q.copy(); Q["tydz"] = Q.timestamp.dt.to_period("W")
+    Q = Q.copy()
+    kody, _ = pd.factorize(Q.timestamp.dt.to_period("W"))
+    fwd = Q.fwd.to_numpy(dtype="float64")
+    nk = int(kody.max()) + 1
     prog = Q.p.quantile(0.9)
-    wyb = Q[Q.p >= prog]
-    if len(wyb) < 30:
+    maska = (Q.p >= prog).to_numpy()
+    n_wyb = int(maska.sum())
+    if n_wyb < 30:
         return None
-    dn = wyb.groupby("tydz").fwd.mean()
-    bs = np.array([dn.values[rng.integers(0, len(dn), len(dn))].mean() for _ in range(2000)])
-    # kontrola: filtr LOSOWY przepuszczajacy tyle samo transakcji
-    los = []
-    for _ in range(200):
-        s = Q.sample(len(wyb), random_state=int(rng.integers(0, 1 << 30)))
-        los.append(s.groupby(s.timestamp.dt.to_period("W")).fwd.mean().mean())
-    los = np.array(los)
+
+    def sr_tyg(sel):
+        su = np.bincount(kody[sel], weights=fwd[sel], minlength=nk)
+        cn = np.bincount(kody[sel], minlength=nk)
+        m = cn > 0
+        return su[m] / cn[m]
+
+    tyg = sr_tyg(maska)
+    bs = np.array([tyg[rng.integers(0, len(tyg), len(tyg))].mean() for _ in range(2000)])
+    N = len(Q)
+    los = np.empty(500)
+    for i in range(500):
+        idx = rng.choice(N, n_wyb, replace=False)
+        sel = np.zeros(N, bool); sel[idx] = True
+        los[i] = sr_tyg(sel).mean()
     return {
-        "n_wybranych": int(len(wyb)),
-        "brutto": float(dn.mean()),
-        "netto": float(dn.mean() - KOSZT),
+        "n_wybranych": n_wyb,
+        "brutto": float(tyg.mean()),
+        "netto": float(tyg.mean() - KOSZT),
         "boot5": float(np.percentile(bs, 5) - KOSZT),
         "losowy_sr": float(los.mean() - KOSZT),
         "losowy_p95": float(np.percentile(los, 95) - KOSZT),
-        "bije_losowy": bool(dn.mean() > np.percentile(los, 95)),
-        "transakcji_na_dzien": float(len(wyb) / max(Q.timestamp.dt.normalize().nunique(), 1)),
+        "bije_losowy": bool(tyg.mean() > np.percentile(los, 95)),
+        "transakcji_na_dzien": float(n_wyb / max(Q.timestamp.dt.normalize().nunique(), 1)),
     }
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--horyzont", type=int, required=True)
-    ap.add_argument("--cel", choices=["bariera", "przekrojowy"], required=True)
+    ap.add_argument("--cel", choices=["bariera", "przekrojowy", "koszt", "ogon", "zmiennosc", "ranking"],
+                    required=True)
     ap.add_argument("--zestaw", choices=["rdzen", "rdzen_htf", "htf_zmiana"], required=True)
     ap.add_argument("--okien", type=int, default=6)
     ap.add_argument("--dni-okna", type=int, default=30)
@@ -152,7 +202,7 @@ def main():
     a = ap.parse_args()
     embargo = a.embargo_h if a.embargo_h is not None else a.horyzont * 2
 
-    from lightgbm import LGBMClassifier
+    from lightgbm import LGBMClassifier, LGBMRanker
     rng = np.random.default_rng(0)
     print(f"zestaw={a.zestaw} cel={a.cel} horyzont={a.horyzont}h embargo={embargo}h", flush=True)
     X, C = zbuduj(a.zestaw)
@@ -172,11 +222,22 @@ def main():
         if len(tr) < 5000 or len(te) < 200:
             print(f"  okno {i+1}: za malo danych (tr={len(tr)}, te={len(te)}) — pomijam", flush=True)
             continue
-        m = LGBMClassifier(n_estimators=300, learning_rate=0.05, num_leaves=31,
-                           min_child_samples=100, subsample=0.8, colsample_bytree=0.8,
-                           random_state=0, n_jobs=4, verbose=-1)
-        m.fit(tr[CECHY], tr.y)
-        te = te.copy(); te["p"] = m.predict_proba(te[CECHY])[:, 1]
+        wsp = dict(n_estimators=300, learning_rate=0.05, num_leaves=31, min_child_samples=100,
+                   subsample=0.8, colsample_bytree=0.8, random_state=0, n_jobs=4, verbose=-1)
+        te = te.copy()
+        if a.cel == "ranking":
+            tr = tr.sort_values("timestamp")
+            grupy = tr.groupby("timestamp", sort=False).size().values
+            m = LGBMRanker(objective="lambdarank", label_gain=list(range(5)), **wsp)
+            m.fit(tr[CECHY], tr.y, group=grupy)
+            te["p"] = m.predict(te[CECHY])
+        else:
+            m = LGBMClassifier(**wsp)
+            m.fit(tr[CECHY], tr.y)
+            te["p"] = m.predict_proba(te[CECHY])[:, 1]
+        os.makedirs(f"{a.wyjscie}/prognozy", exist_ok=True)
+        te[["timestamp", "symbol", "p", "fwd", "fwd_prz"]].to_parquet(
+            f"{a.wyjscie}/prognozy/{a.zestaw}_{a.cel}_h{a.horyzont}_okno{i+1}.parquet", index=False)
         o = ocena(te, rng)
         if o:
             o["okno"] = i + 1

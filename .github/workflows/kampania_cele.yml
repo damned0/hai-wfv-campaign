@@ -1,0 +1,70 @@
+name: HAI kampania celow — 6 celow x 4 horyzonty x 2 zestawy
+# 2026-09-26, druga runda. Pierwsza (kampania_light) pokazala: cel PRZEKROJOWY bije barierowy
+# prawie 2x, zysk netto rosnie z horyzontem ale PRZEWAGA NAD LOSOWYM maleje (6/6 przy 24 h,
+# 3-4/6 przy 336 h), a cechy HTF i "zmiana zmiennosci" nie wnosza nic.
+#
+# Co nowego:
+#   SZESC CELOW zamiast dwoch — kazdy adresuje zmierzony problem:
+#     koszt     — prog 0,22% W ETYKIECIE (dotad model kosztu nie widzial, odejmowalismy po fakcie)
+#     ogon      — gorne 5% zamiast 20% (caly pieniadz siedzi w ogonie, nasz wybor go odrzuca)
+#     zmiennosc — zwrot / zmiennosc realizowana (usuwa skazenie: TP/SL w ATR pytaja o zmiennosc)
+#     ranking   — lambdarank z grupowaniem po chwili; model uczy sie KOLEJNOSCI, nie klasyfikuje
+#                 wierszy osobno. Wlasciwe sformulowanie "ktora moneta teraz", nigdy nieuzyte.
+#   OKNA 45 DNI zamiast 30 — przy horyzoncie 336 h okno 30-dniowe dawalo ~2 niezalezne
+#     obserwacje i boot5 stal na niczym. To byl blad projektowy pierwszej rundy.
+#   ZAPIS PROGNOZ do artefaktu — pierwsza runda zapisywala tylko liczby zbiorcze, wiec kazda
+#     kombinacja (np. przeciecie dwoch celow) wymagala liczenia od nowa.
+#   htf_zmiana WYRZUCONY — najgorszy zestaw na kazdym horyzoncie bez wyjatku.
+#
+# GO: sredni zysk netto koszyka po koszcie od obrotu Z DZWIGNIA, boot5 > 0, bicie filtra
+# losowego przepuszczajacego tyle samo transakcji. To NIE jest oficjalny walidator projektu
+# (12x45 + formula PF) — to PRZESIEW. Nic tu nie jest zwalidowane.
+on:
+  workflow_dispatch:
+    inputs:
+      okien:
+        description: "ile okien walk-forward"
+        default: "6"
+      dni_okna:
+        description: "dlugosc okna testowego w dniach"
+        default: "45"
+jobs:
+  cele:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        horyzont: [24, 72, 168, 336]
+        cel: [bariera, przekrojowy, koszt, ogon, zmiennosc, ranking]
+        zestaw: [rdzen, rdzen_htf]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt
+      - name: shim /root/ProjektHAI
+        run: |
+          sudo mkdir -p /root && sudo chmod 755 /root
+          sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
+      - name: przesiew
+        env:
+          HAI_ROOT: ${{ github.workspace }}
+          OMP_NUM_THREADS: "4"
+        run: |
+          python -u tools/kampania_light.py \
+            --horyzont ${{ matrix.horyzont }} --cel ${{ matrix.cel }} --zestaw ${{ matrix.zestaw }} \
+            --okien ${{ inputs.okien }} --dni-okna ${{ inputs.dni_okna }} --wyjscie wyniki
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cele-${{ matrix.zestaw }}-${{ matrix.cel }}-h${{ matrix.horyzont }}
+          path: wyniki/
+          retention-days: 30
