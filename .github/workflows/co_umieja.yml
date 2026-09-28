@@ -1,0 +1,49 @@
+name: HAI — co umieja cechy (ruch vs kierunek vs L/S)
+# 2026-09-28. Pytanie uzytkownika: "co umiemy tymi modelami na podstawie cech?"
+#
+# Kontekst pomiarowy: modele NIE przewiduja kierunku — AUC 0,4995-0,5247 (rzut moneta 0,5),
+# 11 ksztaltow sciezki 0/11, 7 celow uczenia 0/7. Ale katalog cech sugeruje, ze te same cechy
+# maja duza moc przy WIELKOSCI ruchu (atr_pct 0,348 wobec 0,061 przy kierunku).
+#
+# Dwa zadania rownolegle:
+#   co_umieja        — kierunek / wielkosc / wielkosc PONAD zmiennosc
+#   ruch_kierunek_ls — rozbicie na noge dluga i krotka + asymetria, z kontrola dopasowana
+#
+# Na VPS liczylo sie po kolei ~25 min (pol miliona korelacji rangowych). Tu rownolegle.
+on:
+  workflow_dispatch:
+jobs:
+  pomiar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        skrypt: [co_umieja, ruch_kierunek_ls]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt
+      - name: shim /root/ProjektHAI
+        run: |
+          sudo mkdir -p /root && sudo chmod 755 /root
+          sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
+      - name: pomiar
+        env:
+          HAI_ROOT: ${{ github.workspace }}
+        run: |
+          mkdir -p wyniki
+          python -u tools/${{ matrix.skrypt }}.py 2>&1 | tee wyniki/${{ matrix.skrypt }}.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.skrypt }}
+          path: wyniki/
+          retention-days: 30
