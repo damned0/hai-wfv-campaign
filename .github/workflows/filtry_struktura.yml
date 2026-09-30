@@ -1,0 +1,64 @@
+name: HAI struktura filtrow doktryny (pokrycie + zlozenia)
+# 2026-09-30: tools/drzewa_jako_hipotezy.py wskazalo kandydatow na TRZECI filtr
+# doktryny. Dwaj najlepsi (nad_sr168 <= -10,199 i sila_wzgl <= -2,584) to oba
+# warianty "moneta wlasnie oberwala" — moga byc JEDNYM czynnikiem w dwoch
+# przebraniach. Ten przebieg mierzy wzajemne pokrycie i czy dokladaja do F+S.
+#
+# PROGI SA ZAMROZONE na wartosciach z odkrycia (dane < 2024-03). Sprawdzian leci
+# wylacznie na danych >= 2024-03, ktorych drzewo nie widzialo.
+#
+# Macierz sprawdza DWIE OSI ODPORNOSCI, nie stroi:
+#   glebokosc  1,5 / 2,0 / 2,5 ATR  — czy efekt zyje przy innym wejsciu
+#   mnoznik    0,7 / 1,0 / 1,3      — czy efekt nie wisi na dokladnej wartosci progu
+#
+# UWAGA: dane w tym repo koncza sie 2026-08-20, na VPS 2026-09-30 (40 dni mniej,
+# ~4% okresu sprawdzianu). Tak jest celowo — wyniki zostaja porownywalne
+# z wczesniejszymi kampaniami GH.
+on:
+  workflow_dispatch:
+    inputs:
+      podzial:
+        description: "poczatek sprawdzianu (progi pochodza z danych WCZESNIEJSZYCH)"
+        default: "2024-03-01"
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        gleb: ["1.5", "2.0", "2.5"]
+        mult: ["0.7", "1.0", "1.3"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install pandas pyarrow numpy
+      - name: shim /root/ProjektHAI
+        run: |
+          sudo mkdir -p /root && sudo chmod 755 /root
+          sudo ln -sfn "$GITHUB_WORKSPACE" /root/ProjektHAI
+      - name: struktura filtrow
+        env:
+          HAI_ROOT: ${{ github.workspace }}
+        run: |
+          mkdir -p wyniki
+          python -u tools/filtry_struktura.py \
+            --gleb ${{ matrix.gleb }} \
+            --mult ${{ matrix.mult }} \
+            --podzial "${{ inputs.podzial }}" \
+            --out wyniki/struktura_g${{ matrix.gleb }}_m${{ matrix.mult }}.csv \
+            2>&1 | tee wyniki/log_g${{ matrix.gleb }}_m${{ matrix.mult }}.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: struktura-g${{ matrix.gleb }}-m${{ matrix.mult }}
+          path: wyniki/
+          retention-days: 30
